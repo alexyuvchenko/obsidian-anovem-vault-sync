@@ -72,15 +72,6 @@ With **Merge** on, a note that changed on both devices is merged against the las
 
 A file missing on one side asks you to keep this device or keep Dropbox. Nothing is written until you apply.
 
-Before replacing the file, each existing copy is saved beside it and uploaded:
-
-```text
-notes/20260929-183045_Daily_local_backup.md
-notes/20260929-183045_Daily_dropbox_backup.md
-```
-
-The timestamp is local time, `YYYYMMDD-HHmmss`. The side name keeps both previous copies. A later sync leaves those backups alone once they match on both sides.
-
 Editing a conflicted file outside this tool still sends that edit on the next sync if Dropbox has not changed again. Deleting it here, while Dropbox is unchanged, still drops the Dropbox copy on the next sync.
 
 ## Backup

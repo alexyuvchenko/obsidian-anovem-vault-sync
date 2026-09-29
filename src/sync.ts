@@ -1,9 +1,8 @@
 import { normalizePath, TFile, type App, type Vault } from "obsidian";
-import { formatTimestamp } from "./archive";
 import { DropboxClient, DropboxError } from "./dropbox";
 import { sha256Hex } from "./hash";
 import { decodeUtf8, mergeWords } from "./merge";
-import { conflictBackupPath, isIncluded, normalizeAttachmentsFolder, normalizeDropboxFolder, pathKey, syncVaultFolder, toDropboxPath } from "./paths";
+import { isIncluded, normalizeAttachmentsFolder, normalizeDropboxFolder, pathKey, syncVaultFolder, toDropboxPath } from "./paths";
 import { planAfterCompare, planManualResolution, planRename, planSync, type Presence } from "./plan";
 import type { ConflictItem, ConflictKind, FileRecord, RemoteFile, Settings, SyncReport, SyncState } from "./types";
 
@@ -76,17 +75,11 @@ export class SyncEngine {
     return { local, remote: downloaded.bytes };
   };
 
-  saveResolution = async (relativePath: string, resolved: ArrayBuffer, now: Date): Promise<string[]> => {
-    const sides = await this.readConflictBytes(relativePath);
+  saveResolution = async (relativePath: string, resolved: ArrayBuffer): Promise<void> => {
     const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
-    const stamp = formatTimestamp(now);
-    const backups: string[] = [];
-    if (sides.local) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "local"), sides.local));
-    if (sides.remote) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "dropbox"), sides.remote));
     await this.writeBoth(folder, relativePath, resolved);
     this.state.conflicts = this.state.conflicts.filter((item) => pathKey(item.path) !== pathKey(relativePath));
     await this.persist();
-    return backups;
   };
 
   sync = async (ui: SyncUi): Promise<SyncReport> => {

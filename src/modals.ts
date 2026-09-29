@@ -121,7 +121,7 @@ export class ConflictModal extends Modal {
       return;
     }
     contentEl.createEl("p", {
-      text: "Review keeps lines that exist on only one side. Where both sides changed the same lines, choose before applying. Apply writes that result in both places and keeps a backup of each previous copy.",
+      text: "Review keeps lines that exist on only one side. Where both sides changed the same lines, choose before applying. Apply writes that result in both places.",
     });
     for (const conflict of conflicts) {
       const row = contentEl.createDiv({ cls: "vault-sync-conflict" });
@@ -537,8 +537,8 @@ export class ConflictResolveModal extends Modal {
     try {
       const encoded = new TextEncoder().encode(textFromApplied(this.rows, this.applied, this.custom));
       const bytes = this.binary ?? encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
-      const backups = await this.plugin.engine.saveResolution(this.path, bytes, new Date());
-      new Notice(backups.length > 0 ? `Resolved ${this.path}. Backups: ${backups.join(", ")}` : `Resolved ${this.path}.`);
+      await this.plugin.engine.saveResolution(this.path, bytes);
+      new Notice(`Resolved ${this.path}.`);
       this.close();
       this.onDone();
     } catch (error) {

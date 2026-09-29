@@ -1317,18 +1317,6 @@ function headerJson(value) {
     return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
   });
 }
-function conflictBackupPath(relativePath, timestamp, side) {
-  const normalized = normalizeRelative(relativePath);
-  const slash = normalized.lastIndexOf("/");
-  const dir = slash >= 0 ? normalized.slice(0, slash + 1) : "";
-  const file = slash >= 0 ? normalized.slice(slash + 1) : normalized;
-  const dot = file.lastIndexOf(".");
-  const stem = dot > 0 ? file.slice(0, dot) : file;
-  const ext = dot > 0 ? file.slice(dot) : "";
-  const stamp = timestamp.replace(/[^\d-]/g, "");
-  if (!stamp || !stem) throw new Error("Cannot name a conflict backup.");
-  return `${dir}${stamp}_${stem}_${side}_backup${ext}`;
-}
 function conflictText(kind) {
   if (kind === "both-changed") {
     return "Changed on this device and in Dropbox. Review keeps lines that exist on only one side, then asks where both sides changed.";
@@ -2059,7 +2047,7 @@ var ConflictModal = class extends import_obsidian3.Modal {
       return;
     }
     contentEl.createEl("p", {
-      text: "Review keeps lines that exist on only one side. Where both sides changed the same lines, choose before applying. Apply writes that result in both places and keeps a backup of each previous copy."
+      text: "Review keeps lines that exist on only one side. Where both sides changed the same lines, choose before applying. Apply writes that result in both places."
     });
     for (const conflict of conflicts) {
       const row = contentEl.createDiv({ cls: "vault-sync-conflict" });
@@ -2131,8 +2119,8 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
       try {
         const encoded = new TextEncoder().encode(textFromApplied(this.rows, this.applied, this.custom));
         const bytes = (_a2 = this.binary) != null ? _a2 : encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
-        const backups = await this.plugin.engine.saveResolution(this.path, bytes, /* @__PURE__ */ new Date());
-        new import_obsidian3.Notice(backups.length > 0 ? `Resolved ${this.path}. Backups: ${backups.join(", ")}` : `Resolved ${this.path}.`);
+        await this.plugin.engine.saveResolution(this.path, bytes);
+        new import_obsidian3.Notice(`Resolved ${this.path}.`);
         this.close();
         this.onDone();
       } catch (error) {
@@ -2762,17 +2750,11 @@ var SyncEngine = class {
       const downloaded = await this.client.download(meta.pathDisplay);
       return { local, remote: downloaded.bytes };
     };
-    this.saveResolution = async (relativePath, resolved, now) => {
-      const sides = await this.readConflictBytes(relativePath);
+    this.saveResolution = async (relativePath, resolved) => {
       const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
-      const stamp = formatTimestamp(now);
-      const backups = [];
-      if (sides.local) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "local"), sides.local));
-      if (sides.remote) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "dropbox"), sides.remote));
       await this.writeBoth(folder, relativePath, resolved);
       this.state.conflicts = this.state.conflicts.filter((item) => pathKey(item.path) !== pathKey(relativePath));
       await this.persist();
-      return backups;
     };
     this.sync = async (ui) => {
       const result = await this.run(ui, true);
@@ -3321,10 +3303,10 @@ var DEFAULT_SETTINGS = {
   lastSyncAt: 0,
   lastSyncSummary: "",
   backgroundSync: true,
-  syncIntervalMinutes: 30,
+  syncIntervalMinutes: 5,
   backupFormat: "zip",
   backupFolder: "backups",
-  backupKeepLast: 3,
+  backupKeepLast: 5,
   conflictMode: "review"
 };
 function emptyState() {
