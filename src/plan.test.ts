@@ -26,14 +26,19 @@ test("Dropbox edit downloads when local is unchanged", () => {
   assert.deepEqual(planSync("unchanged", "changed"), { action: "download" });
 });
 
-test("both sides edited is merged against the last shared copy", () => {
-  assert.deepEqual(planSync("changed", "changed"), { action: "merge" });
+test("review leaves both sides edited for a conflict", () => {
+  assert.deepEqual(planSync("changed", "changed"), { action: "compare" });
+  assert.deepEqual(planSync("changed", "changed", "review"), { action: "compare" });
 });
 
-test("the first sync uploads this vault and downloads files that exist only in Dropbox", () => {
-  assert.deepEqual(planSync("untracked", "untracked", true), { action: "upload" });
-  assert.deepEqual(planSync("untracked", "absent", true), { action: "upload" });
-  assert.deepEqual(planSync("absent", "untracked", true), { action: "download" });
+test("merge combines both sides against the last shared copy", () => {
+  assert.deepEqual(planSync("changed", "changed", "merge"), { action: "merge" });
+});
+
+test("the first merge sync uploads this vault and downloads files that exist only in Dropbox", () => {
+  assert.deepEqual(planSync("untracked", "untracked", "merge", true), { action: "upload" });
+  assert.deepEqual(planSync("untracked", "absent", "merge", true), { action: "upload" });
+  assert.deepEqual(planSync("absent", "untracked", "merge", true), { action: "download" });
 });
 
 test("equal bytes are recorded without a write", () => {
@@ -44,9 +49,14 @@ test("different bytes become a conflict", () => {
   assert.deepEqual(planAfterCompare(false), { action: "conflict", kind: "both-changed" });
 });
 
-test("a deletion of an unchanged copy goes to the trash", () => {
-  assert.deepEqual(planSync("absent", "unchanged"), { action: "trash-remote" });
-  assert.deepEqual(planSync("unchanged", "absent"), { action: "trash-local" });
+test("review keeps a one-sided deletion as a conflict", () => {
+  assert.deepEqual(planSync("absent", "unchanged"), { action: "conflict", kind: "deleted-local" });
+  assert.deepEqual(planSync("unchanged", "absent"), { action: "conflict", kind: "deleted-remote" });
+});
+
+test("merge sends a one-sided deletion to the trash", () => {
+  assert.deepEqual(planSync("absent", "unchanged", "merge"), { action: "trash-remote" });
+  assert.deepEqual(planSync("unchanged", "absent", "merge"), { action: "trash-local" });
 });
 
 test("a deletion beside an edit stays a conflict", () => {

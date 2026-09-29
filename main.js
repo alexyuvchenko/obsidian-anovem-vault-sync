@@ -2596,6 +2596,15 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
         this.plugin.scheduleBackgroundSync();
       });
     });
+    new import_obsidian4.Setting(containerEl).setName("Conflict resolving").setDesc("Review asks you to choose when both sides changed, and when a file was removed on only one side. Merge combines those notes against the last synced copy, keeps this device where the same words changed, renames a matching note, and moves a one-sided deletion to the trash. Preview sync shows the plan either way.").addDropdown((dropdown) => {
+      dropdown.addOption("review", "Review");
+      dropdown.addOption("merge", "Merge");
+      dropdown.setValue(this.plugin.settings.conflictMode === "merge" ? "merge" : "review");
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.conflictMode = value === "merge" ? "merge" : "review";
+        await this.plugin.persist();
+      });
+    });
     new import_obsidian4.Setting(containerEl).setName("Sync").setDesc(this.plugin.settings.lastSyncSummary || "Not synced yet.").addButton((button) => {
       button.setButtonText("Preview");
       button.onClick(() => {
@@ -2639,10 +2648,10 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
 var import_obsidian5 = require("obsidian");
 
 // src/plan.ts
-function planSync(local, remote, initial = false) {
+function planSync(local, remote, mode = "review", initial = false) {
   if (local === "absent" && remote === "absent") return { action: "forget" };
-  if (initial && local !== "absent") return { action: "upload" };
-  if (initial && remote !== "absent") return { action: "download" };
+  if (mode === "merge" && initial && local !== "absent") return { action: "upload" };
+  if (mode === "merge" && initial && remote !== "absent") return { action: "download" };
   if (local === "untracked" && remote === "absent") return { action: "upload" };
   if (local === "absent" && remote === "untracked") return { action: "download" };
   if (local === "untracked") return { action: "compare" };
@@ -2650,9 +2659,9 @@ function planSync(local, remote, initial = false) {
   if (local === "unchanged" && remote === "unchanged") return { action: "skip" };
   if (local === "changed" && remote === "unchanged") return { action: "upload" };
   if (local === "unchanged" && remote === "changed") return { action: "download" };
-  if (local === "changed" && remote === "changed") return { action: "merge" };
-  if (local === "absent" && remote === "unchanged") return { action: "trash-remote" };
-  if (local === "unchanged" && remote === "absent") return { action: "trash-local" };
+  if (local === "changed" && remote === "changed") return mode === "merge" ? { action: "merge" } : { action: "compare" };
+  if (mode === "merge" && local === "absent" && remote === "unchanged") return { action: "trash-remote" };
+  if (mode === "merge" && local === "unchanged" && remote === "absent") return { action: "trash-local" };
   if (local === "absent") return { action: "conflict", kind: "deleted-local" };
   return { action: "conflict", kind: "deleted-remote" };
 }
@@ -2706,6 +2715,7 @@ var SyncEngine = class {
     this.pendingRenames = /* @__PURE__ */ new Map();
     this.renamedAway = /* @__PURE__ */ new Set();
     this.initialSync = false;
+    this.mergeMode = false;
     this.readConflictBytes = async (relativePath) => {
       const normalized = (0, import_obsidian5.normalizePath)(relativePath);
       const file = this.app.vault.getAbstractFileByPath(normalized);
@@ -2751,7 +2761,8 @@ var SyncEngine = class {
         const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
         this.settings.dropboxFolder = root;
         this.settings.attachmentsFolder = attachments;
-        this.initialSync = Object.keys(this.state.files).length === 0;
+        this.mergeMode = this.settings.conflictMode === "merge";
+        this.initialSync = this.mergeMode && Object.keys(this.state.files).length === 0;
         ui.update("Reading Dropbox\u2026");
         await yieldToUi2();
         const remote = await this.client.listFiles(folder);
@@ -2882,7 +2893,7 @@ var SyncEngine = class {
       const rename = this.pendingRenames.get(item.key);
       if (rename && item.local) return { type: "rename", fromPath: rename.fromPath, fromKey: rename.fromKey, record: rename.record };
       const remote = !item.remote ? "absent" : !item.record ? "untracked" : item.remote.rev === item.record.dropboxRev ? "unchanged" : "changed";
-      let action = planSync(local.presence, remote, this.initialSync);
+      let action = planSync(local.presence, remote, this.mergeMode ? "merge" : "review", this.initialSync);
       if (action.action === "compare") {
         if (!item.remote || !item.local) return conflictOutcome(localHash, remoteRev);
         const downloaded = await this.client.download(item.remote.dropboxPath);
@@ -2902,7 +2913,7 @@ var SyncEngine = class {
           };
         }
       }
-      if (action.action === "skip") return item.local ? { type: "backfill", path: item.local.path } : { type: "none" };
+      if (action.action === "skip") return this.mergeMode && item.local ? { type: "backfill", path: item.local.path } : { type: "none" };
       if (action.action === "forget") return { type: "forget" };
       if (action.action === "conflict") return conflictOutcome(localHash, remoteRev);
       if (action.action === "download") return { type: "download" };
@@ -3134,7 +3145,7 @@ var SyncEngine = class {
       var _a2, _b2;
       this.pendingRenames.clear();
       this.renamedAway.clear();
-      if (this.initialSync) return;
+      if (!this.mergeMode || this.initialSync) return;
       const orphans = items.filter((item) => !item.local && item.record && item.recordPath);
       const used = /* @__PURE__ */ new Set();
       for (const item of items) {
@@ -3276,7 +3287,8 @@ var DEFAULT_SETTINGS = {
   backgroundSync: true,
   syncIntervalMinutes: 5,
   backupFormat: "zip",
-  backupFolder: "backups"
+  backupFolder: "backups",
+  conflictMode: "review"
 };
 function emptyState() {
   return { files: {}, conflicts: [] };

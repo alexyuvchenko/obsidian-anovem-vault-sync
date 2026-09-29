@@ -13,7 +13,10 @@ export interface Settings {
   syncIntervalMinutes: number;
   backupFormat: "zip" | "gzip";
   backupFolder: string;
+  conflictMode: ConflictMode;
 }
+
+export type ConflictMode = "review" | "merge";
 
 export interface FileRecord {
   hash: string;
@@ -56,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   syncIntervalMinutes: 5,
   backupFormat: "zip",
   backupFolder: "backups",
+  conflictMode: "review",
 };
 
 export function emptyState(): SyncState {

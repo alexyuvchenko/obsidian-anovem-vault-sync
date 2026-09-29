@@ -1,4 +1,4 @@
-import type { ConflictKind } from "./types";
+import type { ConflictKind, ConflictMode } from "./types";
 
 export type Presence = "absent" | "unchanged" | "changed" | "untracked";
 
@@ -15,10 +15,10 @@ export type Plan =
   | { action: "trash-remote" }
   | { action: "conflict"; kind: ConflictKind };
 
-export function planSync(local: Presence, remote: Presence, initial = false): Plan {
+export function planSync(local: Presence, remote: Presence, mode: ConflictMode = "review", initial = false): Plan {
   if (local === "absent" && remote === "absent") return { action: "forget" };
-  if (initial && local !== "absent") return { action: "upload" };
-  if (initial && remote !== "absent") return { action: "download" };
+  if (mode === "merge" && initial && local !== "absent") return { action: "upload" };
+  if (mode === "merge" && initial && remote !== "absent") return { action: "download" };
   if (local === "untracked" && remote === "absent") return { action: "upload" };
   if (local === "absent" && remote === "untracked") return { action: "download" };
   if (local === "untracked") return { action: "compare" };
@@ -26,9 +26,9 @@ export function planSync(local: Presence, remote: Presence, initial = false): Pl
   if (local === "unchanged" && remote === "unchanged") return { action: "skip" };
   if (local === "changed" && remote === "unchanged") return { action: "upload" };
   if (local === "unchanged" && remote === "changed") return { action: "download" };
-  if (local === "changed" && remote === "changed") return { action: "merge" };
-  if (local === "absent" && remote === "unchanged") return { action: "trash-remote" };
-  if (local === "unchanged" && remote === "absent") return { action: "trash-local" };
+  if (local === "changed" && remote === "changed") return mode === "merge" ? { action: "merge" } : { action: "compare" };
+  if (mode === "merge" && local === "absent" && remote === "unchanged") return { action: "trash-remote" };
+  if (mode === "merge" && local === "unchanged" && remote === "absent") return { action: "trash-local" };
   if (local === "absent") return { action: "conflict", kind: "deleted-local" };
   return { action: "conflict", kind: "deleted-remote" };
 }

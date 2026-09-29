@@ -45,9 +45,13 @@ Background sync is on by default. While Obsidian is open, the vault syncs every 
 
 **Sync both ways** still runs immediately. It is in the command palette, the ↔ icon on the left ribbon, and the plugin settings. **Preview sync** lists the plan and does not write.
 
-The first sync has no shared history, so this vault is uploaded. Files that exist only in Dropbox are downloaded. Later syncs transfer only what changed. Each file is compared with the copy on this device, the Dropbox copy, and the last version both sides agreed on.
+Choose **Conflict resolving** in the plugin settings.
 
-| This device | Dropbox | Result |
+**Review** is the default. A file changed on both sides, or removed on only one side, stays in place until you review it.
+
+**Merge** compares this device, Dropbox, and the last version both sides agreed on. The first sync in this mode uploads this vault and downloads files that exist only in Dropbox. Later syncs transfer only what changed.
+
+| This device | Dropbox | Merge result |
 | --- | --- | --- |
 | New or edited | Unchanged | Uploaded |
 | Unchanged | New or edited | Downloaded |
@@ -62,7 +66,7 @@ The first sync has no shared history, so this vault is uploaded. Files that exis
 
 The conflict list opens when Obsidian starts if any conflicts are already recorded, and again after a sync that still has conflicts. The status bar shows the count and opens that list. A note that is open and conflicted shows a **Review** banner. **Review sync conflict in the active note** does the same from the command palette.
 
-A note that changed on both devices is merged against the last synced copy. Words changed on only one side are kept from that side. Words changed on both sides stay as they are on this device, and the sync summary names that note. A file that is not text, a deletion beside an edit, or a note with no saved base copy stays a conflict for review.
+With **Merge** on, a note that changed on both devices is merged against the last synced copy. Words changed on only one side are kept from that side. Words changed on both sides stay as they are on this device, and the sync summary names that note. A file that is not text, a deletion beside an edit, or a note with no saved base copy stays a conflict for review.
 
 **Review** lists each remaining conflict on its own. Unchanged lines stay folded between them. A line that exists on only one side is already kept, and you can leave it out. Where both sides changed the same lines, the two copies sit side by side. **Keep this device**, **Keep Dropbox**, **Keep both**, or **Leave out** picks what is saved, and **Edit** replaces that text with your own. Changed words are marked. **Apply** stays off until each disagreement has a choice, then writes the result on this device and in Dropbox. When several places disagree, **This device for all** and **Dropbox for all** choose those places and leave one-sided lines as they are. On a narrow screen the two copies stack.
 

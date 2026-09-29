@@ -158,6 +158,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Conflict resolving")
+      .setDesc("Review asks you to choose when both sides changed, and when a file was removed on only one side. Merge combines those notes against the last synced copy, keeps this device where the same words changed, renames a matching note, and moves a one-sided deletion to the trash. Preview sync shows the plan either way.")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("review", "Review");
+        dropdown.addOption("merge", "Merge");
+        dropdown.setValue(this.plugin.settings.conflictMode === "merge" ? "merge" : "review");
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.conflictMode = value === "merge" ? "merge" : "review";
+          await this.plugin.persist();
+        });
+      });
+
+    new Setting(containerEl)
       .setName("Sync")
       .setDesc(this.plugin.settings.lastSyncSummary || "Not synced yet.")
       .addButton((button) => {

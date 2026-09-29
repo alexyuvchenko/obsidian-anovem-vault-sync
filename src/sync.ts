@@ -55,6 +55,7 @@ export class SyncEngine {
   private pendingRenames = new Map<string, { fromKey: string; fromPath: string; record: FileRecord }>();
   private renamedAway = new Set<string>();
   private initialSync = false;
+  private mergeMode = false;
 
   constructor(
     private readonly app: App,
@@ -113,7 +114,8 @@ export class SyncEngine {
       const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
       this.settings.dropboxFolder = root;
       this.settings.attachmentsFolder = attachments;
-      this.initialSync = Object.keys(this.state.files).length === 0;
+      this.mergeMode = this.settings.conflictMode === "merge";
+      this.initialSync = this.mergeMode && Object.keys(this.state.files).length === 0;
       ui.update("Reading Dropbox…");
       await yieldToUi();
       const remote = await this.client.listFiles(folder);
@@ -258,7 +260,7 @@ export class SyncEngine {
     const rename = this.pendingRenames.get(item.key);
     if (rename && item.local) return { type: "rename", fromPath: rename.fromPath, fromKey: rename.fromKey, record: rename.record };
     const remote: Presence = !item.remote ? "absent" : !item.record ? "untracked" : item.remote.rev === item.record.dropboxRev ? "unchanged" : "changed";
-    let action = planSync(local.presence, remote, this.initialSync);
+    let action = planSync(local.presence, remote, this.mergeMode ? "merge" : "review", this.initialSync);
     if (action.action === "compare") {
       if (!item.remote || !item.local) return conflictOutcome(localHash, remoteRev);
       const downloaded = await this.client.download(item.remote.dropboxPath);
@@ -278,7 +280,7 @@ export class SyncEngine {
         };
       }
     }
-    if (action.action === "skip") return item.local ? { type: "backfill", path: item.local.path } : { type: "none" };
+    if (action.action === "skip") return this.mergeMode && item.local ? { type: "backfill", path: item.local.path } : { type: "none" };
     if (action.action === "forget") return { type: "forget" };
     if (action.action === "conflict") return conflictOutcome(localHash, remoteRev);
     if (action.action === "download") return { type: "download" };
@@ -540,7 +542,7 @@ export class SyncEngine {
   private indexRenames = async (items: Item[], ui: SyncUi): Promise<void> => {
     this.pendingRenames.clear();
     this.renamedAway.clear();
-    if (this.initialSync) return;
+    if (!this.mergeMode || this.initialSync) return;
     const orphans = items.filter((item) => !item.local && item.record && item.recordPath);
     const used = new Set<string>();
     for (const item of items) {
