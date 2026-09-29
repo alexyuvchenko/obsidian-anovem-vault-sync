@@ -93,10 +93,10 @@ export function conflictBackupPath(relativePath: string, timestamp: string, side
 
 export function conflictText(kind: ConflictKind): string {
   if (kind === "both-changed") {
-    return "Changed on this device and in Dropbox. Neither copy was written. Edit the file, then sync again to send your version.";
+    return "Changed on this device and in Dropbox. Review keeps lines that exist on only one side, then asks where both sides changed.";
   }
   if (kind === "deleted-local") {
-    return "This file is not on this device, and it is still in Dropbox. Nothing was deleted. Put the file back in the vault, then sync again.";
+    return "This file is not on this device, and it is still in Dropbox. Review can restore the Dropbox copy.";
   }
-  return "This file is on this device and not in Dropbox. Nothing was removed. Edit it and sync again to send it, or delete it here and sync again to drop it.";
+  return "This file is on this device and not in Dropbox. Review can send this copy.";
 }

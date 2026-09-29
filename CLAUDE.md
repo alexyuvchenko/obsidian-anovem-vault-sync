@@ -46,7 +46,7 @@ Included files are every `.md` note, plus every file inside the attachments fold
 
 Each vault is stored under the Dropbox folder in a subfolder named after the vault. Default Dropbox folder is `/ObsidianAnovem`. The Mac and iPhone copies of a vault need the same vault name. Compare paths case-insensitively (`pathKey`).
 
-`planSync` decides upload, download, adopt, compare, forget, or conflict. Conflicts stay in place until **Open** in the conflict list saves a merged copy. That save writes the result on this device and in Dropbox, and writes `{timestamp}_{name}_local_backup` and `{timestamp}_{name}_dropbox_backup` beside the file in both places. The plugin does not pick a side on its own. A later edit on one side, with the other side unchanged since the conflict, still sends or receives that side (`planManualResolution`).
+`planSync` decides upload, download, adopt, compare, forget, or conflict. Conflicts stay in place until **Review** saves a merged copy. Lines that exist on only one side start kept. Lines that differ on both sides stay undecided until that save. The save writes the result on this device and in Dropbox, and writes `{timestamp}_{name}_local_backup` and `{timestamp}_{name}_dropbox_backup` beside the file in both places. A later edit on one side, with the other side unchanged since the conflict, still sends or receives that side (`planManualResolution`).
 
 Background sync defaults to every 5 minutes while Obsidian is open, and again when the app becomes visible. It does not run after Obsidian is closed.
 

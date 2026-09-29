@@ -56,9 +56,11 @@ Background sync is on by default. While Obsidian is open, the vault syncs every 
 
 ### Conflicts
 
-The conflict list opens when Obsidian starts if any conflicts are already recorded, and again after a sync that still has conflicts. The plugin does not pick a side on its own.
+The conflict list opens when Obsidian starts if any conflicts are already recorded, and again after a sync that still has conflicts. The status bar shows the count and opens that list. A note that is open and conflicted shows a **Review** banner. **Review sync conflict in the active note** does the same from the command palette.
 
-**Open** shows the note as three aligned panes: this device, the result, and Dropbox. Changed lines are red. Lines kept in the result are blue. **»** applies the left change, **«** applies the right change, and **×** leaves that side out. A change can include either side or both. **Apply** writes that result over the file on this device and in Dropbox.
+**Review** shows the note as three aligned panes: this device, the result, and Dropbox. Unchanged stretches are folded. Changed words are marked inside the line. Lines that exist on only one side start out kept, so two devices can add different paragraphs and the result already contains both. Where both sides rewrote the same lines, that change stays undecided: **»** keeps this device, **«** keeps Dropbox, **×** leaves that side out, and **Edit** replaces the change with your own text. **Apply** stays off until every one of those changes has a choice. It then writes the result on this device and in Dropbox.
+
+A file missing on one side asks you to keep this device or keep Dropbox. Nothing is written until you apply.
 
 Before replacing the file, each existing copy is saved beside it and uploaded:
 

@@ -76,23 +76,127 @@ export function mergeBlocks(rows: DiffRow[]): DiffRow[] {
   return blocks;
 }
 
+export interface TextSpan {
+  text: string;
+  strong: boolean;
+}
+
 export interface MergeLine {
   hunk: number | null;
   from: "same" | "local" | "remote";
   text: string;
+  spans: TextSpan[];
 }
 
 export function mergeLines(rows: DiffRow[]): MergeLine[] {
   const lines: MergeLine[] = [];
   for (const row of rows) {
     if (row.kind === "same") {
-      lines.push({ hunk: null, from: "same", text: row.local });
+      lines.push({ hunk: null, from: "same", text: row.local, spans: [{ text: row.local, strong: false }] });
       continue;
     }
-    for (const text of splitBlock(row.local)) lines.push({ hunk: row.id, from: "local", text });
-    for (const text of splitBlock(row.remote)) lines.push({ hunk: row.id, from: "remote", text });
+    const localLines = splitBlock(row.local);
+    const remoteLines = splitBlock(row.remote);
+    localLines.forEach((text, index) => {
+      lines.push({ hunk: row.id, from: "local", text, spans: changedSpans(text, remoteLines[index]) });
+    });
+    remoteLines.forEach((text, index) => {
+      lines.push({ hunk: row.id, from: "remote", text, spans: changedSpans(text, localLines[index]) });
+    });
   }
   return lines;
+}
+
+export type HunkShape = "local-only" | "remote-only" | "both";
+
+export function hunkShape(row: DiffRow): HunkShape | null {
+  if (row.kind !== "change") return null;
+  if (row.local.length > 0 && row.remote.length === 0) return "local-only";
+  if (row.remote.length > 0 && row.local.length === 0) return "remote-only";
+  return "both";
+}
+
+export function seedChoices(rows: DiffRow[]): Map<number, ApplyChoice> {
+  const applied = new Map<number, ApplyChoice>();
+  for (const row of rows) {
+    const shape = hunkShape(row);
+    if (shape === "local-only") applied.set(row.id, { local: true, remote: false });
+    if (shape === "remote-only") applied.set(row.id, { local: false, remote: true });
+  }
+  return applied;
+}
+
+export function pendingHunks(
+  rows: DiffRow[],
+  applied: ReadonlyMap<number, ApplyChoice>,
+  custom: ReadonlyMap<number, string>,
+): DiffRow[] {
+  return rows.filter((row) => row.kind === "change" && !applied.has(row.id) && !custom.has(row.id));
+}
+
+export function hunkLabel(row: DiffRow, choice: ApplyChoice | undefined, edited: boolean): string {
+  if (edited) return "Edited";
+  if (!choice) return "Both sides changed. Choose before applying.";
+  const shape = hunkShape(row);
+  if (shape === "local-only" && choice.local && !choice.remote) return "Only on this device. Kept.";
+  if (shape === "remote-only" && choice.remote && !choice.local) return "Only in Dropbox. Kept.";
+  if (choice.local && choice.remote) return "Both sides kept.";
+  if (choice.local) return "This device kept.";
+  if (choice.remote) return "Dropbox kept.";
+  return "Both sides left out.";
+}
+
+export type DisplayLine =
+  | { kind: "line"; line: MergeLine; index: number }
+  | { kind: "fold"; id: number; count: number };
+
+export function foldContext(lines: MergeLine[], context = 2, open: ReadonlySet<number> = new Set()): DisplayLine[] {
+  const visible = lines.map(() => false);
+  lines.forEach((line, index) => {
+    if (line.hunk === null) return;
+    for (let cursor = Math.max(0, index - context); cursor <= Math.min(lines.length - 1, index + context); cursor += 1) {
+      visible[cursor] = true;
+    }
+  });
+  const display: DisplayLine[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    if (visible[index]) {
+      display.push({ kind: "line", line: lines[index], index });
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < lines.length && !visible[index]) index += 1;
+    if (open.has(start)) {
+      for (let cursor = start; cursor < index; cursor += 1) display.push({ kind: "line", line: lines[cursor], index: cursor });
+    } else {
+      display.push({ kind: "fold", id: start, count: index - start });
+    }
+  }
+  return display;
+}
+
+export function changedSpans(line: string, other: string | undefined): TextSpan[] {
+  if (line.length === 0) return [];
+  if (other === undefined || other.length === 0) return [{ text: line, strong: true }];
+  if (line === other) return [{ text: line, strong: false }];
+  const left = tokens(line);
+  const right = tokens(other);
+  if (left.length * right.length > 20_000) return [{ text: line, strong: true }];
+  const spans: TextSpan[] = [];
+  for (const op of lineOps(left, right)) {
+    if (op.tag === "remote") continue;
+    const strong = op.tag === "local";
+    const prev = spans[spans.length - 1];
+    if (prev && prev.strong === strong) prev.text += op.line;
+    else spans.push({ text: op.line, strong });
+  }
+  return spans.length > 0 ? spans : [{ text: line, strong: true }];
+}
+
+function tokens(value: string): string[] {
+  return value.split(/(\s+)/).filter((part) => part.length > 0);
 }
 
 function splitBlock(text: string): string[] {

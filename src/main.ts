@@ -1,9 +1,10 @@
-import { addIcon, Notice, Platform, Plugin, requestUrl } from "obsidian";
+import { addIcon, MarkdownView, Notice, Platform, Plugin, requestUrl } from "obsidian";
 import { normalizeBackupFolder, type BackupFormat } from "./archive";
 import { BackupCancelled, createBackup } from "./backup";
 import { DropboxClient } from "./dropbox";
 import { errorMessage } from "./errors";
-import { ConflictModal, SyncProgressModal } from "./modals";
+import { ConflictModal, ConflictResolveModal, SyncProgressModal } from "./modals";
+import { pathKey } from "./paths";
 import { PLUGIN_FILES, RELEASE_REPO, parseLatestRelease } from "./release";
 import { VaultSyncSettingTab } from "./settings";
 import { summarize, SyncEngine } from "./sync";
@@ -24,6 +25,7 @@ export default class VaultSyncPlugin extends Plugin {
   engine!: SyncEngine;
   private running = false;
   private statusBar: HTMLElement | null = null;
+  private conflictStatus: HTMLElement | null = null;
   private backgroundTimer: number | null = null;
   private lastBackgroundAt = 0;
 
@@ -51,6 +53,17 @@ export default class VaultSyncPlugin extends Plugin {
       callback: () => this.showConflicts(),
     });
     this.addCommand({
+      id: "review-conflict",
+      name: "Review sync conflict in the active note",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const open = !!file && this.state.conflicts.some((conflict) => pathKey(conflict.path) === pathKey(file.path));
+        if (checking) return open;
+        if (file && open) this.reviewConflict(file.path);
+        return open;
+      },
+    });
+    this.addCommand({
       id: "update-plugin",
       name: "Install or update plugin from GitHub",
       callback: () => {
@@ -73,9 +86,16 @@ export default class VaultSyncPlugin extends Plugin {
     if (!Platform.isMobile) {
       this.statusBar = this.addStatusBarItem();
       this.statusBar.setText(this.settings.lastSyncSummary || "Sync");
+      this.conflictStatus = this.addStatusBarItem();
+      this.conflictStatus.addClass("vault-sync-conflict-status");
+      this.conflictStatus.onclick = () => this.showConflicts();
     }
+    this.registerEvent(this.app.workspace.on("file-open", () => this.refreshConflictBanner()));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshConflictBanner()));
+    this.refreshConflictChrome();
     this.scheduleBackgroundSync();
     this.app.workspace.onLayoutReady(() => {
+      this.refreshConflictChrome();
       if (this.state.conflicts.length > 0) this.showConflicts();
       const start = window.setTimeout(() => void this.syncNow("background"), 5000);
       this.register(() => window.clearTimeout(start));
@@ -136,6 +156,7 @@ export default class VaultSyncPlugin extends Plugin {
       const conflictsChanged = this.state.conflicts.length !== conflictsBefore;
       const moved = report.uploaded > 0 || report.downloaded > 0 || report.failed.length > 0 || report.cancelled;
       if (!background || moved || conflictsChanged) new Notice(this.settings.lastSyncSummary);
+      this.refreshConflictChrome();
       if (this.state.conflicts.length > 0 && (!background || conflictsChanged)) this.showConflicts();
     } catch (error) {
       modal?.finish();
@@ -151,6 +172,41 @@ export default class VaultSyncPlugin extends Plugin {
 
   showConflicts(): void {
     new ConflictModal(this.app, this).open();
+  }
+
+  reviewConflict(path: string, onDone?: () => void): void {
+    new ConflictResolveModal(this.app, this, path, () => {
+      this.refreshConflictChrome();
+      onDone?.();
+    }).open();
+  }
+
+  refreshConflictChrome(): void {
+    const count = this.state.conflicts.length;
+    if (this.conflictStatus) {
+      this.conflictStatus.toggleClass("is-clear", count === 0);
+      this.conflictStatus.setText(count === 0 ? "" : `${count} ${count === 1 ? "conflict" : "conflicts"}`);
+    }
+    this.refreshConflictBanner();
+  }
+
+  onunload(): void {
+    document.querySelectorAll(".vault-sync-conflict-banner").forEach((el) => el.remove());
+  }
+
+  private refreshConflictBanner(): void {
+    document.querySelectorAll(".vault-sync-conflict-banner").forEach((el) => el.remove());
+    const file = this.app.workspace.getActiveFile();
+    if (!file || !this.state.conflicts.some((conflict) => pathKey(conflict.path) === pathKey(file.path))) return;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView) ?? this.app.workspace.getMostRecentLeaf()?.view;
+    if (!view) return;
+    for (const host of bannerHosts(view.containerEl)) {
+      const banner = host.createDiv({ cls: "vault-sync-conflict-banner" });
+      host.prepend(banner);
+      banner.createSpan({ text: "This note has a sync conflict." });
+      const review = banner.createEl("button", { text: "Review" });
+      review.onclick = () => this.reviewConflict(file.path);
+    }
   }
 
   updateFromGitHub = async (): Promise<void> => {
@@ -224,6 +280,15 @@ async function reloadPlugin(app: VaultSyncPlugin["app"], id: string): Promise<vo
   }).plugins;
   await plugins.disablePlugin(id);
   await plugins.enablePlugin(id);
+}
+
+function bannerHosts(container: HTMLElement): HTMLElement[] {
+  const found = [".markdown-source-view", ".markdown-reading-view"]
+    .map((selector) => container.querySelector(selector))
+    .filter((node): node is HTMLElement => node instanceof HTMLElement);
+  if (found.length > 0) return found;
+  const content = container.querySelector(".view-content");
+  return [content instanceof HTMLElement ? content : container];
 }
 
 function normalizeSyncMinutes(value: number): number {

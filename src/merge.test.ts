@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diffRows, mergeBlocks, mergeLines, textFromApplied, textFromChoices } from "./merge";
+import { changedSpans, diffRows, foldContext, hunkLabel, mergeBlocks, mergeLines, pendingHunks, seedChoices, textFromApplied, textFromChoices } from "./merge";
 import { conflictBackupPath } from "./paths";
 
 test("backup names keep the folder and mark which side", () => {
@@ -53,4 +53,38 @@ test("a changed table stays one markdown block", () => {
   assert.equal(blocks[0].kind, "change");
   assert.equal(blocks[0].local, local);
   assert.equal(blocks[0].remote, remote);
+});
+
+test("lines that exist on only one side are kept together", () => {
+  const local = "title\nonly local\nmiddle\nend";
+  const remote = "title\nmiddle\nend\nonly remote";
+  const rows = diffRows(local, remote);
+  assert.equal(pendingHunks(rows, seedChoices(rows), new Map()).length, 0);
+  assert.equal(textFromApplied(rows, seedChoices(rows)), "title\nonly local\nmiddle\nend\nonly remote");
+});
+
+test("a line changed on both sides stays undecided", () => {
+  const rows = diffRows("title\nalpha\nend", "title\nbeta\nend");
+  const pending = pendingHunks(rows, seedChoices(rows), new Map());
+  assert.equal(pending.length, 1);
+  assert.equal(hunkLabel(pending[0], undefined, false), "Both sides changed. Choose before applying.");
+});
+
+test("only the changed word is marked inside a line", () => {
+  assert.deepEqual(changedSpans("hello world", "hello there"), [
+    { text: "hello ", strong: false },
+    { text: "world", strong: true },
+  ]);
+});
+
+test("unchanged stretches collapse around a change", () => {
+  const local = ["same1", "same2", "same3", "same4", "same5", "local", "same6", "same7", "same8"].join("\n");
+  const remote = ["same1", "same2", "same3", "same4", "same5", "remote", "same6", "same7", "same8"].join("\n");
+  const folded = foldContext(mergeLines(diffRows(local, remote)), 2);
+  const folds = folded.filter((item) => item.kind === "fold");
+  assert.equal(folds.length, 2);
+  assert.deepEqual(
+    folds.map((item) => (item.kind === "fold" ? item.count : 0)),
+    [3, 1],
+  );
 });
