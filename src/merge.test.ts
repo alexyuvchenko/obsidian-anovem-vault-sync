@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { blockLines, changedSpans, diffRows, foldContext, hunkLabel, mergeBlocks, mergeLines, pendingHunks, seedChoices, textFromApplied, textFromChoices } from "./merge";
+import { blockLines, changedSpans, diffRows, foldContext, hunkLabel, mergeBlocks, mergeLines, mergeWords, pendingHunks, seedChoices, textFromApplied, textFromChoices } from "./merge";
 import { conflictBackupPath } from "./paths";
 
 test("backup names keep the folder and mark which side", () => {
@@ -76,6 +76,24 @@ test("leaving out a one-sided line says so", () => {
   assert.ok(added);
   assert.equal(hunkLabel(added, { local: true, remote: false }, false), "Kept");
   assert.equal(hunkLabel(added, { local: false, remote: false }, false), "Left out");
+});
+
+test("a word merge keeps a change from each side", () => {
+  const merged = mergeWords("one two three", "one TWO three", "one two THREE");
+  assert.equal(merged.overlap, false);
+  assert.equal(merged.text, "one TWO THREE");
+});
+
+test("a word merge keeps an insertion from either side", () => {
+  const merged = mergeWords("hello world", "hello kind world", "hello world today");
+  assert.equal(merged.overlap, false);
+  assert.equal(merged.text, "hello kind world today");
+});
+
+test("a word merge keeps this device when the same word changed", () => {
+  const merged = mergeWords("one two three", "one TWO three", "one 2 three");
+  assert.equal(merged.overlap, true);
+  assert.equal(merged.text, "one TWO three");
 });
 
 test("a changed word is marked on each side of a block", () => {

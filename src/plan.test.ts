@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planAfterCompare, planManualResolution, planSync } from "./plan";
+import { planAfterCompare, planManualResolution, planRename, planSync } from "./plan";
 
 test("new local file uploads", () => {
   assert.deepEqual(planSync("untracked", "absent"), { action: "upload" });
@@ -26,8 +26,14 @@ test("Dropbox edit downloads when local is unchanged", () => {
   assert.deepEqual(planSync("unchanged", "changed"), { action: "download" });
 });
 
-test("both sides edited is compared before any write", () => {
-  assert.deepEqual(planSync("changed", "changed"), { action: "compare" });
+test("both sides edited is merged against the last shared copy", () => {
+  assert.deepEqual(planSync("changed", "changed"), { action: "merge" });
+});
+
+test("the first sync uploads this vault and downloads files that exist only in Dropbox", () => {
+  assert.deepEqual(planSync("untracked", "untracked", true), { action: "upload" });
+  assert.deepEqual(planSync("untracked", "absent", true), { action: "upload" });
+  assert.deepEqual(planSync("absent", "untracked", true), { action: "download" });
 });
 
 test("equal bytes are recorded without a write", () => {
@@ -38,14 +44,21 @@ test("different bytes become a conflict", () => {
   assert.deepEqual(planAfterCompare(false), { action: "conflict", kind: "both-changed" });
 });
 
-test("local deletion is a conflict", () => {
-  assert.deepEqual(planSync("absent", "unchanged"), { action: "conflict", kind: "deleted-local" });
-  assert.deepEqual(planSync("absent", "changed"), { action: "conflict", kind: "deleted-local" });
+test("a deletion of an unchanged copy goes to the trash", () => {
+  assert.deepEqual(planSync("absent", "unchanged"), { action: "trash-remote" });
+  assert.deepEqual(planSync("unchanged", "absent"), { action: "trash-local" });
 });
 
-test("remote deletion is a conflict", () => {
-  assert.deepEqual(planSync("unchanged", "absent"), { action: "conflict", kind: "deleted-remote" });
+test("a deletion beside an edit stays a conflict", () => {
+  assert.deepEqual(planSync("absent", "changed"), { action: "conflict", kind: "deleted-local" });
   assert.deepEqual(planSync("changed", "absent"), { action: "conflict", kind: "deleted-remote" });
+});
+
+test("a rename is one matching unchanged Dropbox file at the old path", () => {
+  assert.equal(planRename(1, true, false), true);
+  assert.equal(planRename(1, true, true), false);
+  assert.equal(planRename(2, true, false), false);
+  assert.equal(planRename(1, false, false), false);
 });
 
 test("a file gone on both sides drops its record", () => {

@@ -72,6 +72,10 @@ export interface RemoteFile {
 export interface SyncReport {
   uploaded: number;
   downloaded: number;
+  merged: number;
+  renamed: number;
+  trashed: number;
+  overlaps: string[];
   conflicts: number;
   failed: string[];
   cancelled: boolean;

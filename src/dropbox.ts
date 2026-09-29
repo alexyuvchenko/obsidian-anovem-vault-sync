@@ -124,6 +124,24 @@ export class DropboxClient {
     return { rev: body.rev, size: body.size ?? 0, pathDisplay: body.path_display };
   };
 
+  move = async (fromPath: string, toPath: string): Promise<{ rev: string; size: number }> => {
+    const res = await this.rpc("files/move_v2", {
+      from_path: fromPath,
+      to_path: toPath,
+      autorename: false,
+      allow_ownership_transfer: false,
+    });
+    if (res.missing) throw new DropboxError("missing");
+    const metadata = (res.body as { metadata?: { rev?: string; size?: number } }).metadata;
+    if (!metadata?.rev) throw new DropboxError("Dropbox move did not return a revision.");
+    return { rev: metadata.rev, size: metadata.size ?? 0 };
+  };
+
+  delete = async (dropboxPath: string): Promise<void> => {
+    const res = await this.rpc("files/delete_v2", { path: dropboxPath });
+    if (res.missing) return;
+  };
+
   upload = async (
     dropboxPath: string,
     bytes: ArrayBuffer,

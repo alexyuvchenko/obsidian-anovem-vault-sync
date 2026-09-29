@@ -9,10 +9,16 @@ export type Plan =
   | { action: "adopt" }
   | { action: "compare" }
   | { action: "forget" }
+  | { action: "merge" }
+  | { action: "rename" }
+  | { action: "trash-local" }
+  | { action: "trash-remote" }
   | { action: "conflict"; kind: ConflictKind };
 
-export function planSync(local: Presence, remote: Presence): Plan {
+export function planSync(local: Presence, remote: Presence, initial = false): Plan {
   if (local === "absent" && remote === "absent") return { action: "forget" };
+  if (initial && local !== "absent") return { action: "upload" };
+  if (initial && remote !== "absent") return { action: "download" };
   if (local === "untracked" && remote === "absent") return { action: "upload" };
   if (local === "absent" && remote === "untracked") return { action: "download" };
   if (local === "untracked") return { action: "compare" };
@@ -20,9 +26,15 @@ export function planSync(local: Presence, remote: Presence): Plan {
   if (local === "unchanged" && remote === "unchanged") return { action: "skip" };
   if (local === "changed" && remote === "unchanged") return { action: "upload" };
   if (local === "unchanged" && remote === "changed") return { action: "download" };
-  if (local === "changed" && remote === "changed") return { action: "compare" };
+  if (local === "changed" && remote === "changed") return { action: "merge" };
+  if (local === "absent" && remote === "unchanged") return { action: "trash-remote" };
+  if (local === "unchanged" && remote === "absent") return { action: "trash-local" };
   if (local === "absent") return { action: "conflict", kind: "deleted-local" };
   return { action: "conflict", kind: "deleted-remote" };
+}
+
+export function planRename(matches: number, oldRemoteUnchanged: boolean, newRemoteExists: boolean): boolean {
+  return matches === 1 && oldRemoteUnchanged && !newRemoteExists;
 }
 
 export function planAfterCompare(equal: boolean): Plan {

@@ -16,6 +16,7 @@ import {
   type TextSpan,
 } from "./merge";
 import { conflictText } from "./paths";
+import type { PlanLine } from "./sync";
 import type VaultSyncPlugin from "./main";
 
 export class SyncProgressModal extends Modal {
@@ -48,6 +49,53 @@ export class SyncProgressModal extends Modal {
   onClose(): void {
     if (!this.finished) this.cancelled = true;
   }
+}
+
+export class SyncPlanModal extends Modal {
+  constructor(
+    app: App,
+    private readonly lines: PlanLine[],
+    private readonly onSync: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.setTitle("Sync plan");
+    const { contentEl } = this;
+    if (this.lines.length === 0) {
+      contentEl.createEl("p", { text: "Already in sync. Nothing would change." });
+    } else {
+      contentEl.createEl("p", { text: "This is what a sync would do. Nothing has been written." });
+      const list = contentEl.createDiv({ cls: "vault-sync-plan" });
+      for (const line of this.lines) {
+        const row = list.createDiv({ cls: "vault-sync-plan-row" });
+        row.createSpan({ cls: "vault-sync-plan-action", text: planAction(line.action) });
+        const body = row.createDiv();
+        body.createDiv({ cls: "vault-sync-conflict-path", text: line.path });
+        body.createDiv({ cls: "setting-item-description", text: line.note });
+      }
+    }
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    if (this.lines.length > 0) {
+      const sync = buttons.createEl("button", { cls: "mod-cta", text: "Sync both ways" });
+      sync.onclick = () => {
+        this.close();
+        this.onSync();
+      };
+    }
+    const close = buttons.createEl("button", { text: "Close" });
+    close.onclick = () => this.close();
+  }
+}
+
+function planAction(action: PlanLine["action"]): string {
+  if (action === "upload") return "Upload";
+  if (action === "download") return "Download";
+  if (action === "merge") return "Merge";
+  if (action === "rename") return "Rename";
+  if (action === "trash") return "Trash";
+  return "Review";
 }
 
 export class ConflictModal extends Modal {

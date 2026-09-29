@@ -177,6 +177,32 @@ export function foldContext(lines: MergeLine[], context = 2, open: ReadonlySet<n
   return display;
 }
 
+export interface WordMerge {
+  text: string;
+  overlap: boolean;
+}
+
+export function mergeWords(base: string, local: string, remote: string): WordMerge {
+  if (local === remote) return { text: local, overlap: false };
+  const baseWords = wordTokens(base);
+  const localWords = wordTokens(local);
+  const remoteWords = wordTokens(remote);
+  if (withinMergeLimit(baseWords, localWords) && withinMergeLimit(baseWords, remoteWords)) {
+    return mergePieces(baseWords, localWords, remoteWords, "");
+  }
+  const baseLines = linePieces(base);
+  const localLines = linePieces(local);
+  const remoteLines = linePieces(remote);
+  if (!withinMergeLimit(baseLines, localLines) || !withinMergeLimit(baseLines, remoteLines)) {
+    return { text: local, overlap: true };
+  }
+  return mergePieces(baseLines, localLines, remoteLines, "\n");
+}
+
+function withinMergeLimit(before: string[], after: string[]): boolean {
+  return before.length * Math.max(after.length, 1) <= 1_000_000;
+}
+
 export function blockLines(local: string, remote: string): { local: TextSpan[][]; remote: TextSpan[][] } {
   const left = splitBlock(local);
   const right = splitBlock(remote);
@@ -205,7 +231,93 @@ export function changedSpans(line: string, other: string | undefined): TextSpan[
 }
 
 function tokens(value: string): string[] {
+  return wordTokens(value);
+}
+
+function wordTokens(value: string): string[] {
+  if (value.length === 0) return [];
   return value.split(/(\s+)/).filter((part) => part.length > 0);
+}
+
+function linePieces(value: string): string[] {
+  if (value.length === 0) return [];
+  return value.split("\n");
+}
+
+interface PieceEdit {
+  start: number;
+  end: number;
+  pieces: string[];
+  side: "local" | "remote";
+}
+
+function mergePieces(base: string[], local: string[], remote: string[], joiner: string): WordMerge {
+  const edits = [
+    ...pieceEdits(base, local, "local"),
+    ...pieceEdits(base, remote, "remote"),
+  ].sort((a, b) => a.start - b.start || a.end - b.end || (a.side === "local" ? -1 : 1));
+  const clusters: PieceEdit[][] = [];
+  for (const edit of edits) {
+    const current = clusters[clusters.length - 1];
+    if (!current || !current.some((item) => piecesOverlap(item, edit))) clusters.push([edit]);
+    else current.push(edit);
+  }
+  const out: string[] = [];
+  let cursor = 0;
+  let overlap = false;
+  for (const cluster of clusters) {
+    const start = Math.min(...cluster.map((edit) => edit.start));
+    const end = Math.max(...cluster.map((edit) => edit.end));
+    out.push(...base.slice(cursor, start));
+    const locals = cluster.filter((edit) => edit.side === "local");
+    const remotes = cluster.filter((edit) => edit.side === "remote");
+    if (locals.length > 0 && remotes.length > 0) overlap = true;
+    out.push(...applyPieces(base, locals.length > 0 ? locals : remotes, start, end));
+    cursor = end;
+  }
+  out.push(...base.slice(cursor));
+  return { text: out.join(joiner), overlap };
+}
+
+function pieceEdits(before: string[], after: string[], side: "local" | "remote"): PieceEdit[] {
+  const ops = lineOps(before, after);
+  const edits: PieceEdit[] = [];
+  let baseIndex = 0;
+  let index = 0;
+  while (index < ops.length) {
+    if (ops[index].tag === "same") {
+      baseIndex += 1;
+      index += 1;
+      continue;
+    }
+    const start = baseIndex;
+    const pieces: string[] = [];
+    while (index < ops.length && ops[index].tag !== "same") {
+      if (ops[index].tag === "local") baseIndex += 1;
+      else pieces.push(ops[index].line);
+      index += 1;
+    }
+    edits.push({ start, end: baseIndex, pieces, side });
+  }
+  return edits;
+}
+
+function piecesOverlap(a: PieceEdit, b: PieceEdit): boolean {
+  if (a.start === a.end && b.start === b.end) return a.start === b.start;
+  return a.start < b.end && b.start < a.end;
+}
+
+function applyPieces(base: string[], edits: PieceEdit[], start: number, end: number): string[] {
+  const out: string[] = [];
+  let cursor = start;
+  for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
+    if (edit.start < cursor) continue;
+    out.push(...base.slice(cursor, edit.start));
+    out.push(...edit.pieces);
+    cursor = edit.end;
+  }
+  out.push(...base.slice(cursor, end));
+  return out;
 }
 
 function splitBlock(text: string): string[] {

@@ -46,7 +46,11 @@ Included files are every `.md` note, plus every file inside the attachments fold
 
 Each vault is stored under the Dropbox folder in a subfolder named after the vault. Default Dropbox folder is `/ObsidianAnovem`. The Mac and iPhone copies of a vault need the same vault name. Compare paths case-insensitively (`pathKey`).
 
-`planSync` decides upload, download, adopt, compare, forget, or conflict. Conflicts stay in place until **Review** saves a merged copy. Lines that exist on only one side start kept. Lines that differ on both sides stay undecided until that save. The save writes the result on this device and in Dropbox, and writes `{timestamp}_{name}_local_backup` and `{timestamp}_{name}_dropbox_backup` beside the file in both places. A later edit on one side, with the other side unchanged since the conflict, still sends or receives that side (`planManualResolution`).
+`planSync` decides upload, download, merge, rename, trash, adopt, compare, forget, or conflict. The first sync uploads this vault and downloads files that exist only in Dropbox. Later syncs transfer only what changed. **Preview sync** lists that plan and does not write.
+
+A note changed on both sides is merged word by word against the last synced copy, stored under the plugin folder. A change on only one side is kept. Where both sides changed the same words, this device is kept and the summary says so. A file that is not text, a deletion beside an edit, or a note with no saved base stays a conflict until **Review** saves a merged copy. Lines that exist on only one side start kept. Lines that differ on both sides stay undecided until that save. The save writes the result on this device and in Dropbox, and writes `{timestamp}_{name}_local_backup` and `{timestamp}_{name}_dropbox_backup` beside the file in both places. A later edit on one side, with the other side unchanged since the conflict, still sends or receives that side (`planManualResolution`).
+
+A file removed on one side, while the other side is unchanged, goes to the trash on the other side. This device uses Obsidian's deleted-files setting. Dropbox uses its trash. Both can be restored.
 
 Background sync defaults to every 5 minutes while Obsidian is open, and again when the app becomes visible. It does not run after Obsidian is closed.
 

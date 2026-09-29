@@ -161,6 +161,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       .setName("Sync")
       .setDesc(this.plugin.settings.lastSyncSummary || "Not synced yet.")
       .addButton((button) => {
+        button.setButtonText("Preview");
+        button.onClick(() => {
+          void this.plugin.previewNow();
+        });
+      })
+      .addButton((button) => {
         button.setButtonText("Show conflicts");
         button.onClick(() => this.plugin.showConflicts());
       })

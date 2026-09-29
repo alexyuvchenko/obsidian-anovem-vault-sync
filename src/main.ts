@@ -3,7 +3,7 @@ import { normalizeBackupFolder, type BackupFormat } from "./archive";
 import { BackupCancelled, createBackup } from "./backup";
 import { DropboxClient } from "./dropbox";
 import { errorMessage } from "./errors";
-import { ConflictModal, ConflictResolveModal, SyncProgressModal } from "./modals";
+import { ConflictModal, ConflictResolveModal, SyncPlanModal, SyncProgressModal } from "./modals";
 import { pathKey } from "./paths";
 import { PLUGIN_FILES, RELEASE_REPO, parseLatestRelease } from "./release";
 import { VaultSyncSettingTab } from "./settings";
@@ -45,6 +45,13 @@ export default class VaultSyncPlugin extends Plugin {
       name: "Sync both ways",
       callback: () => {
         void this.syncNow();
+      },
+    });
+    this.addCommand({
+      id: "preview-sync",
+      name: "Preview sync",
+      callback: () => {
+        void this.previewNow();
       },
     });
     this.addCommand({
@@ -165,6 +172,34 @@ export default class VaultSyncPlugin extends Plugin {
       this.statusBar?.setText(message);
       if (!background || this.settings.refreshToken) new Notice(message);
       await this.persist();
+    } finally {
+      this.running = false;
+    }
+  };
+
+  previewNow = async (): Promise<void> => {
+    if (this.running) {
+      new Notice("A sync or backup is already running.");
+      return;
+    }
+    this.running = true;
+    const modal = new SyncProgressModal(this.app, "Previewing sync");
+    modal.open();
+    try {
+      const lines = await this.engine.preview({
+        cancelled: () => modal.cancelled,
+        update: (text) => {
+          modal.setStatus(text);
+          this.statusBar?.setText(text);
+        },
+      });
+      modal.finish();
+      new SyncPlanModal(this.app, lines, () => {
+        void this.syncNow();
+      }).open();
+    } catch (error) {
+      modal.finish();
+      new Notice(errorMessage(error));
     } finally {
       this.running = false;
     }

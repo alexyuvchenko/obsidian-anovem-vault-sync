@@ -43,22 +43,28 @@ Sync includes every Markdown note, plus every file inside the attachments folder
 
 Background sync is on by default. While Obsidian is open, the vault syncs every 5 minutes and again when you return to the app. You can keep editing. One run uploads notes changed on this device and downloads notes changed in Dropbox. It does not run after Obsidian is closed. Change the interval, or turn it off, under **Background sync** in the plugin settings.
 
-**Sync both ways** still runs immediately. It is in the command palette, the ↔ icon on the left ribbon, and the plugin settings.
+**Sync both ways** still runs immediately. It is in the command palette, the ↔ icon on the left ribbon, and the plugin settings. **Preview sync** lists the plan and does not write.
+
+The first sync has no shared history, so this vault is uploaded. Files that exist only in Dropbox are downloaded. Later syncs transfer only what changed. Each file is compared with the copy on this device, the Dropbox copy, and the last version both sides agreed on.
 
 | This device | Dropbox | Result |
 | --- | --- | --- |
 | New or edited | Unchanged | Uploaded |
 | Unchanged | New or edited | Downloaded |
-| Same content on both, first sync | Same content | Recorded, nothing written |
-| Changed on both | Changed | Left in place and listed as a conflict |
-| Removed here only | Still present | Left in place and listed as a conflict |
-| Still present | Removed there only | Left in place and listed as a conflict |
+| Same content on both, first sync | Same content | Uploaded |
+| Changed on both | Changed | Merged word by word. Where both sides changed the same words, this device is kept and the summary says so |
+| Renamed here, same bytes | Unchanged at the old path | Renamed in Dropbox |
+| Removed here, Dropbox unchanged | Still present | Dropbox copy goes to the Dropbox trash |
+| Unchanged | Removed there | This copy goes to the Obsidian trash, using the vault's deleted-files setting |
+| Removed here | Edited there, or the reverse | Left in place and listed as a conflict |
 
 ### Conflicts
 
 The conflict list opens when Obsidian starts if any conflicts are already recorded, and again after a sync that still has conflicts. The status bar shows the count and opens that list. A note that is open and conflicted shows a **Review** banner. **Review sync conflict in the active note** does the same from the command palette.
 
-**Review** lists each change on its own. Unchanged lines stay folded between them. A line that exists on only one side is already kept, and you can leave it out. Where both sides changed the same lines, the two copies sit side by side. **Keep this device**, **Keep Dropbox**, **Keep both**, or **Leave out** picks what is saved, and **Edit** replaces that text with your own. Changed words are marked. **Apply** stays off until each disagreement has a choice, then writes the result on this device and in Dropbox. When several places disagree, **This device for all** and **Dropbox for all** choose those places and leave one-sided lines as they are. On a narrow screen the two copies stack.
+A note that changed on both devices is merged against the last synced copy. Words changed on only one side are kept from that side. Words changed on both sides stay as they are on this device, and the sync summary names that note. A file that is not text, a deletion beside an edit, or a note with no saved base copy stays a conflict for review.
+
+**Review** lists each remaining conflict on its own. Unchanged lines stay folded between them. A line that exists on only one side is already kept, and you can leave it out. Where both sides changed the same lines, the two copies sit side by side. **Keep this device**, **Keep Dropbox**, **Keep both**, or **Leave out** picks what is saved, and **Edit** replaces that text with your own. Changed words are marked. **Apply** stays off until each disagreement has a choice, then writes the result on this device and in Dropbox. When several places disagree, **This device for all** and **Dropbox for all** choose those places and leave one-sided lines as they are. On a narrow screen the two copies stack.
 
 A file missing on one side asks you to keep this device or keep Dropbox. Nothing is written until you apply.
 

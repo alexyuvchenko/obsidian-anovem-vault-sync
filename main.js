@@ -1418,6 +1418,23 @@ var DropboxClient = class {
       if (body[".tag"] !== "file" || !body.rev || !body.path_display) return null;
       return { rev: body.rev, size: (_a2 = body.size) != null ? _a2 : 0, pathDisplay: body.path_display };
     };
+    this.move = async (fromPath, toPath) => {
+      var _a2;
+      const res = await this.rpc("files/move_v2", {
+        from_path: fromPath,
+        to_path: toPath,
+        autorename: false,
+        allow_ownership_transfer: false
+      });
+      if (res.missing) throw new DropboxError("missing");
+      const metadata = res.body.metadata;
+      if (!(metadata == null ? void 0 : metadata.rev)) throw new DropboxError("Dropbox move did not return a revision.");
+      return { rev: metadata.rev, size: (_a2 = metadata.size) != null ? _a2 : 0 };
+    };
+    this.delete = async (dropboxPath) => {
+      const res = await this.rpc("files/delete_v2", { path: dropboxPath });
+      if (res.missing) return;
+    };
     this.upload = async (dropboxPath, bytes, mode) => {
       const commit = { path: dropboxPath, mode };
       const result = bytes.byteLength <= CHUNK ? await this.simpleUpload(commit, bytes) : await this.sessionUpload(commit, bytes);
@@ -1732,6 +1749,25 @@ function hunkLabel(row, choice, edited) {
   if (choice.remote) return "Kept from Dropbox";
   return "Left out";
 }
+function mergeWords(base, local, remote) {
+  if (local === remote) return { text: local, overlap: false };
+  const baseWords = wordTokens(base);
+  const localWords = wordTokens(local);
+  const remoteWords = wordTokens(remote);
+  if (withinMergeLimit(baseWords, localWords) && withinMergeLimit(baseWords, remoteWords)) {
+    return mergePieces(baseWords, localWords, remoteWords, "");
+  }
+  const baseLines = linePieces(base);
+  const localLines = linePieces(local);
+  const remoteLines = linePieces(remote);
+  if (!withinMergeLimit(baseLines, localLines) || !withinMergeLimit(baseLines, remoteLines)) {
+    return { text: local, overlap: true };
+  }
+  return mergePieces(baseLines, localLines, remoteLines, "\n");
+}
+function withinMergeLimit(before, after) {
+  return before.length * Math.max(after.length, 1) <= 1e6;
+}
 function blockLines(local, remote) {
   const left = splitBlock(local);
   const right = splitBlock(remote);
@@ -1758,7 +1794,80 @@ function changedSpans(line, other) {
   return spans.length > 0 ? spans : [{ text: line, strong: true }];
 }
 function tokens(value) {
+  return wordTokens(value);
+}
+function wordTokens(value) {
+  if (value.length === 0) return [];
   return value.split(/(\s+)/).filter((part) => part.length > 0);
+}
+function linePieces(value) {
+  if (value.length === 0) return [];
+  return value.split("\n");
+}
+function mergePieces(base, local, remote, joiner) {
+  const edits = [
+    ...pieceEdits(base, local, "local"),
+    ...pieceEdits(base, remote, "remote")
+  ].sort((a, b) => a.start - b.start || a.end - b.end || (a.side === "local" ? -1 : 1));
+  const clusters = [];
+  for (const edit of edits) {
+    const current = clusters[clusters.length - 1];
+    if (!current || !current.some((item) => piecesOverlap(item, edit))) clusters.push([edit]);
+    else current.push(edit);
+  }
+  const out = [];
+  let cursor = 0;
+  let overlap = false;
+  for (const cluster of clusters) {
+    const start = Math.min(...cluster.map((edit) => edit.start));
+    const end = Math.max(...cluster.map((edit) => edit.end));
+    out.push(...base.slice(cursor, start));
+    const locals = cluster.filter((edit) => edit.side === "local");
+    const remotes = cluster.filter((edit) => edit.side === "remote");
+    if (locals.length > 0 && remotes.length > 0) overlap = true;
+    out.push(...applyPieces(base, locals.length > 0 ? locals : remotes, start, end));
+    cursor = end;
+  }
+  out.push(...base.slice(cursor));
+  return { text: out.join(joiner), overlap };
+}
+function pieceEdits(before, after, side) {
+  const ops = lineOps(before, after);
+  const edits = [];
+  let baseIndex = 0;
+  let index = 0;
+  while (index < ops.length) {
+    if (ops[index].tag === "same") {
+      baseIndex += 1;
+      index += 1;
+      continue;
+    }
+    const start = baseIndex;
+    const pieces = [];
+    while (index < ops.length && ops[index].tag !== "same") {
+      if (ops[index].tag === "local") baseIndex += 1;
+      else pieces.push(ops[index].line);
+      index += 1;
+    }
+    edits.push({ start, end: baseIndex, pieces, side });
+  }
+  return edits;
+}
+function piecesOverlap(a, b) {
+  if (a.start === a.end && b.start === b.end) return a.start === b.start;
+  return a.start < b.end && b.start < a.end;
+}
+function applyPieces(base, edits, start, end) {
+  const out = [];
+  let cursor = start;
+  for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
+    if (edit.start < cursor) continue;
+    out.push(...base.slice(cursor, edit.start));
+    out.push(...edit.pieces);
+    cursor = edit.end;
+  }
+  out.push(...base.slice(cursor, end));
+  return out;
 }
 function splitBlock(text) {
   if (text.length === 0) return [];
@@ -1862,6 +1971,48 @@ var SyncProgressModal = class extends import_obsidian3.Modal {
     if (!this.finished) this.cancelled = true;
   }
 };
+var SyncPlanModal = class extends import_obsidian3.Modal {
+  constructor(app, lines, onSync) {
+    super(app);
+    this.lines = lines;
+    this.onSync = onSync;
+  }
+  onOpen() {
+    this.setTitle("Sync plan");
+    const { contentEl } = this;
+    if (this.lines.length === 0) {
+      contentEl.createEl("p", { text: "Already in sync. Nothing would change." });
+    } else {
+      contentEl.createEl("p", { text: "This is what a sync would do. Nothing has been written." });
+      const list = contentEl.createDiv({ cls: "vault-sync-plan" });
+      for (const line of this.lines) {
+        const row = list.createDiv({ cls: "vault-sync-plan-row" });
+        row.createSpan({ cls: "vault-sync-plan-action", text: planAction(line.action) });
+        const body = row.createDiv();
+        body.createDiv({ cls: "vault-sync-conflict-path", text: line.path });
+        body.createDiv({ cls: "setting-item-description", text: line.note });
+      }
+    }
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    if (this.lines.length > 0) {
+      const sync = buttons.createEl("button", { cls: "mod-cta", text: "Sync both ways" });
+      sync.onclick = () => {
+        this.close();
+        this.onSync();
+      };
+    }
+    const close = buttons.createEl("button", { text: "Close" });
+    close.onclick = () => this.close();
+  }
+};
+function planAction(action) {
+  if (action === "upload") return "Upload";
+  if (action === "download") return "Download";
+  if (action === "merge") return "Merge";
+  if (action === "rename") return "Rename";
+  if (action === "trash") return "Trash";
+  return "Review";
+}
 var ConflictModal = class extends import_obsidian3.Modal {
   constructor(app, plugin) {
     super(app);
@@ -2446,6 +2597,11 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
       });
     });
     new import_obsidian4.Setting(containerEl).setName("Sync").setDesc(this.plugin.settings.lastSyncSummary || "Not synced yet.").addButton((button) => {
+      button.setButtonText("Preview");
+      button.onClick(() => {
+        void this.plugin.previewNow();
+      });
+    }).addButton((button) => {
       button.setButtonText("Show conflicts");
       button.onClick(() => this.plugin.showConflicts());
     }).addButton((button) => {
@@ -2483,8 +2639,10 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
 var import_obsidian5 = require("obsidian");
 
 // src/plan.ts
-function planSync(local, remote) {
+function planSync(local, remote, initial = false) {
   if (local === "absent" && remote === "absent") return { action: "forget" };
+  if (initial && local !== "absent") return { action: "upload" };
+  if (initial && remote !== "absent") return { action: "download" };
   if (local === "untracked" && remote === "absent") return { action: "upload" };
   if (local === "absent" && remote === "untracked") return { action: "download" };
   if (local === "untracked") return { action: "compare" };
@@ -2492,9 +2650,14 @@ function planSync(local, remote) {
   if (local === "unchanged" && remote === "unchanged") return { action: "skip" };
   if (local === "changed" && remote === "unchanged") return { action: "upload" };
   if (local === "unchanged" && remote === "changed") return { action: "download" };
-  if (local === "changed" && remote === "changed") return { action: "compare" };
+  if (local === "changed" && remote === "changed") return { action: "merge" };
+  if (local === "absent" && remote === "unchanged") return { action: "trash-remote" };
+  if (local === "unchanged" && remote === "absent") return { action: "trash-local" };
   if (local === "absent") return { action: "conflict", kind: "deleted-local" };
   return { action: "conflict", kind: "deleted-remote" };
+}
+function planRename(matches, oldRemoteUnchanged, newRemoteExists) {
+  return matches === 1 && oldRemoteUnchanged && !newRemoteExists;
 }
 function planAfterCompare(equal) {
   if (equal) return { action: "adopt" };
@@ -2520,12 +2683,17 @@ function planManualResolution(snapshot, localHash, remoteRev) {
 // src/sync.ts
 function summarize(report) {
   const base = report.cancelled ? "Sync stopped. " : "";
-  if (!report.cancelled && report.uploaded === 0 && report.downloaded === 0 && report.conflicts === 0 && report.failed.length === 0) {
-    return "Already in sync.";
+  const quiet = report.uploaded === 0 && report.downloaded === 0 && report.merged === 0 && report.renamed === 0 && report.trashed === 0 && report.conflicts === 0 && report.failed.length === 0;
+  if (!report.cancelled && quiet) return "Already in sync.";
+  let text = `${base}Uploaded ${report.uploaded}, downloaded ${report.downloaded}, merged ${report.merged}, renamed ${report.renamed}, trashed ${report.trashed}, conflicts ${report.conflicts}.`;
+  if (report.overlaps.length > 0) {
+    text += ` Kept this device where the same words changed: ${report.overlaps.slice(0, 3).join(", ")}.`;
   }
-  const text = `${base}Uploaded ${report.uploaded}, downloaded ${report.downloaded}, conflicts ${report.conflicts}.`;
   if (report.failed.length === 0) return text;
   return `${text} ${report.failed.slice(0, 3).join(" ")}`;
+}
+function emptyReport() {
+  return { uploaded: 0, downloaded: 0, merged: 0, renamed: 0, trashed: 0, overlaps: [], conflicts: 0, failed: [], cancelled: false };
 }
 var SyncEngine = class {
   constructor(app, settings, state, persist, client) {
@@ -2534,6 +2702,10 @@ var SyncEngine = class {
     this.state = state;
     this.persist = persist;
     this.client = client;
+    this.remotes = /* @__PURE__ */ new Map();
+    this.pendingRenames = /* @__PURE__ */ new Map();
+    this.renamedAway = /* @__PURE__ */ new Set();
+    this.initialSync = false;
     this.readConflictBytes = async (relativePath) => {
       const normalized = (0, import_obsidian5.normalizePath)(relativePath);
       const file = this.app.vault.getAbstractFileByPath(normalized);
@@ -2557,7 +2729,16 @@ var SyncEngine = class {
       return backups;
     };
     this.sync = async (ui) => {
-      const report = { uploaded: 0, downloaded: 0, conflicts: 0, failed: [], cancelled: false };
+      const result = await this.run(ui, true);
+      return result.report;
+    };
+    this.preview = async (ui) => {
+      const result = await this.run(ui, false);
+      return result.lines;
+    };
+    this.run = async (ui, write) => {
+      const report = emptyReport();
+      const lines = [];
       const nextConflicts = [];
       const seen = /* @__PURE__ */ new Set();
       let listed = false;
@@ -2570,11 +2751,13 @@ var SyncEngine = class {
         const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
         this.settings.dropboxFolder = root;
         this.settings.attachmentsFolder = attachments;
+        this.initialSync = Object.keys(this.state.files).length === 0;
         ui.update("Reading Dropbox\u2026");
         await yieldToUi2();
         const remote = await this.client.listFiles(folder);
         listed = true;
         items = this.collect(attachments, remote.files);
+        await this.indexRenames(items, ui);
         let index = 0;
         for (const item of items) {
           if (ui.cancelled()) {
@@ -2586,12 +2769,11 @@ var SyncEngine = class {
           ui.update(`${index} / ${items.length}  ${label}`);
           seen.add(item.key);
           try {
-            const outcome = await this.apply(item, folder, previous.get(item.key));
-            if (outcome.type === "upload") report.uploaded += 1;
-            if (outcome.type === "download") report.downloaded += 1;
-            if (outcome.type === "conflict") {
+            const outcome = await this.apply(item, folder, previous.get(item.key), write);
+            this.count(report, lines, label, outcome);
+            if (write && outcome.type === "conflict") {
               nextConflicts.push({
-                path: itemPath(item),
+                path: label,
                 kind: outcome.kind,
                 localHash: outcome.localHash,
                 remoteRev: outcome.remoteRev
@@ -2599,17 +2781,20 @@ var SyncEngine = class {
             }
           } catch (error) {
             if (error instanceof DropboxError && error.message === "missing") {
-              if (item.local) nextConflicts.push({ path: item.local.path, kind: "deleted-remote" });
-              else this.deleteRecord(item.key);
+              if (item.local) {
+                const conflict = conflictOutcome(await this.localHash(item), null);
+                this.count(report, lines, label, conflict);
+                if (write) nextConflicts.push({ path: item.local.path, kind: "deleted-remote", localHash: conflict.localHash, remoteRev: null });
+              } else if (write) this.deleteRecord(item.key);
             } else {
               report.failed.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
           await yieldToUi2();
         }
-        return report;
+        return { report, lines };
       } finally {
-        if (listed) {
+        if (write && listed) {
           const itemKeys = new Set(items.map((item) => item.key));
           for (const [key, conflict] of previous) {
             if (!seen.has(key) && itemKeys.has(key)) nextConflicts.push(conflict);
@@ -2619,7 +2804,7 @@ var SyncEngine = class {
           this.state.conflicts = [...byKey.values()];
           report.conflicts = this.state.conflicts.length;
         }
-        await this.persist();
+        if (write) await this.persist();
       }
     };
     this.collect = (attachments, remoteFiles) => {
@@ -2637,9 +2822,11 @@ var SyncEngine = class {
         if (!isIncluded(file.path, attachments)) continue;
         slot(file.path).local = file;
       }
+      this.remotes.clear();
       for (const remote of remoteFiles) {
         if (!isIncluded(remote.relativePath, attachments)) continue;
         slot(remote.relativePath).remote = remote;
+        this.remotes.set(pathKey(remote.relativePath), remote);
       }
       for (const [recordPath, record] of Object.entries(this.state.files)) {
         const item = slot(recordPath);
@@ -2648,15 +2835,16 @@ var SyncEngine = class {
       }
       return [...map.values()].sort((a, b) => itemPath(a).localeCompare(itemPath(b)));
     };
-    this.apply = async (item, folder, existing) => {
+    this.apply = async (item, folder, existing, write) => {
       var _a2, _b2;
       const local = await inspectLocal(item.local, item.record);
       const localHash = item.local ? local.hash : null;
       const remoteRev = (_b2 = (_a2 = item.remote) == null ? void 0 : _a2.rev) != null ? _b2 : null;
-      if (hasSnapshot(existing)) return this.applyManual(item, folder, existing, local, localHash, remoteRev);
-      return this.applyFresh(item, folder, local, localHash, remoteRev);
+      const classified = hasSnapshot(existing) ? await this.classifyManual(item, existing, local, localHash, remoteRev) : await this.classifyFresh(item, local, localHash, remoteRev);
+      if (!write) return classified;
+      return this.execute(item, folder, local, classified);
     };
-    this.applyManual = async (item, folder, existing, local, localHash, remoteRev) => {
+    this.classifyManual = async (item, existing, local, localHash, remoteRev) => {
       var _a2, _b2;
       let action = planManualResolution(
         { localHash: (_a2 = existing.localHash) != null ? _a2 : null, remoteRev: (_b2 = existing.remoteRev) != null ? _b2 : null },
@@ -2667,52 +2855,152 @@ var SyncEngine = class {
         const downloaded = await this.client.download(item.remote.dropboxPath);
         const remoteHash = await sha256Hex(downloaded.bytes);
         if (remoteHash === local.hash) {
-          this.putRecord(item.local.path, {
-            hash: local.hash,
-            size: local.size,
-            mtime: local.mtime,
-            dropboxRev: downloaded.rev || item.remote.rev
-          }, item.recordPath);
-          return { type: "none" };
+          return {
+            type: "adopt",
+            path: item.local.path,
+            bytes: downloaded.bytes,
+            record: {
+              hash: local.hash,
+              size: local.size,
+              mtime: local.mtime,
+              dropboxRev: downloaded.rev || item.remote.rev
+            }
+          };
         }
         action = "hold";
       } else if (action === "compare") {
         action = "hold";
       }
-      if (action === "forget") {
-        this.deleteRecord(item.key);
-        return { type: "none" };
-      }
+      if (action === "forget") return { type: "forget" };
       if (action === "hold") return conflictOutcome(localHash, remoteRev);
-      if (action === "download") return this.downloadRemote(item, local, localHash, remoteRev);
-      return this.uploadLocal(item, folder, local, localHash, remoteRev);
+      if (action === "download") return { type: "download" };
+      return { type: "upload" };
     };
-    this.applyFresh = async (item, folder, local, localHash, remoteRev) => {
+    this.classifyFresh = async (item, local, localHash, remoteRev) => {
+      var _a2;
+      if (this.renamedAway.has(item.key) && !item.local) return { type: "forget" };
+      const rename = this.pendingRenames.get(item.key);
+      if (rename && item.local) return { type: "rename", fromPath: rename.fromPath, fromKey: rename.fromKey, record: rename.record };
       const remote = !item.remote ? "absent" : !item.record ? "untracked" : item.remote.rev === item.record.dropboxRev ? "unchanged" : "changed";
-      let action = planSync(local.presence, remote);
+      let action = planSync(local.presence, remote, this.initialSync);
       if (action.action === "compare") {
         if (!item.remote || !item.local) return conflictOutcome(localHash, remoteRev);
         const downloaded = await this.client.download(item.remote.dropboxPath);
         const remoteHash = await sha256Hex(downloaded.bytes);
         action = planAfterCompare(remoteHash === local.hash);
         if (action.action === "adopt") {
-          this.putRecord(item.local.path, {
+          return {
+            type: "adopt",
+            path: item.local.path,
+            bytes: (_a2 = local.bytes) != null ? _a2 : downloaded.bytes,
+            record: {
+              hash: local.hash,
+              size: local.size,
+              mtime: local.mtime,
+              dropboxRev: downloaded.rev || item.remote.rev
+            }
+          };
+        }
+      }
+      if (action.action === "skip") return item.local ? { type: "backfill", path: item.local.path } : { type: "none" };
+      if (action.action === "forget") return { type: "forget" };
+      if (action.action === "conflict") return conflictOutcome(localHash, remoteRev);
+      if (action.action === "download") return { type: "download" };
+      if (action.action === "upload") return { type: "upload" };
+      if (action.action === "trash-local") return { type: "trash-local" };
+      if (action.action === "trash-remote") return { type: "trash-remote" };
+      if (action.action === "merge") return this.classifyMerge(item, local, localHash, remoteRev);
+      return { type: "none" };
+    };
+    this.classifyMerge = async (item, local, localHash, remoteRev) => {
+      var _a2, _b2, _c;
+      if (!item.local || !item.remote) return conflictOutcome(localHash, remoteRev);
+      const downloaded = await this.client.download(item.remote.dropboxPath);
+      const remoteHash = await sha256Hex(downloaded.bytes);
+      if (remoteHash === local.hash) {
+        return {
+          type: "adopt",
+          path: item.local.path,
+          bytes: (_a2 = local.bytes) != null ? _a2 : downloaded.bytes,
+          record: {
             hash: local.hash,
             size: local.size,
             mtime: local.mtime,
             dropboxRev: downloaded.rev || item.remote.rev
-          }, item.recordPath);
-        }
+          }
+        };
       }
-      if (action.action === "skip" || action.action === "adopt") return { type: "none" };
-      if (action.action === "forget") {
+      const localBytes = (_b2 = local.bytes) != null ? _b2 : await this.app.vault.readBinary(item.local);
+      const localText = decodeUtf8(localBytes);
+      const remoteText = decodeUtf8(downloaded.bytes);
+      const baseBytes = await this.readBase((_c = item.recordPath) != null ? _c : item.local.path);
+      const baseText = baseBytes ? decodeUtf8(baseBytes) : null;
+      if (localText === null || remoteText === null || baseText === null) return conflictOutcome(localHash, remoteRev);
+      const merged = mergeWords(baseText, localText, remoteText);
+      const encoded = new TextEncoder().encode(merged.text);
+      return {
+        type: "merge",
+        overlap: merged.overlap,
+        path: item.local.path,
+        bytes: encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength)
+      };
+    };
+    this.execute = async (item, folder, local, classified) => {
+      var _a2, _b2, _c, _d;
+      if (classified.type === "backfill") {
+        try {
+          if (!await this.readBase(classified.path)) {
+            const file = this.app.vault.getAbstractFileByPath((0, import_obsidian5.normalizePath)(classified.path));
+            if (file instanceof import_obsidian5.TFile) await this.saveBase(classified.path, await this.app.vault.readBinary(file));
+          }
+        } catch (e) {
+        }
+        return { type: "none" };
+      }
+      if (classified.type === "forget") {
         this.deleteRecord(item.key);
         return { type: "none" };
       }
-      if (action.action === "conflict") return conflictOutcome(localHash, remoteRev);
-      if (action.action === "download") return this.downloadRemote(item, local, localHash, remoteRev);
-      if (action.action !== "upload") return { type: "none" };
-      return this.uploadLocal(item, folder, local, localHash, remoteRev);
+      if (classified.type === "adopt") {
+        await this.agree(classified.path, classified.record, item.recordPath, classified.bytes);
+        return { type: "none" };
+      }
+      if (classified.type === "download") return this.downloadRemote(item, local, item.local ? local.hash : null, (_b2 = (_a2 = item.remote) == null ? void 0 : _a2.rev) != null ? _b2 : null);
+      if (classified.type === "upload") return this.uploadLocal(item, folder, local, item.local ? local.hash : null, (_d = (_c = item.remote) == null ? void 0 : _c.rev) != null ? _d : null);
+      if (classified.type === "trash-local") return this.trashLocal(item);
+      if (classified.type === "trash-remote") return this.trashRemote(item);
+      if (classified.type === "merge") {
+        await this.writeBoth(folder, classified.path, classified.bytes);
+        return classified;
+      }
+      if (classified.type === "rename") return this.rename(item, folder, local, classified);
+      return classified;
+    };
+    this.rename = async (item, folder, local, classified) => {
+      var _a2;
+      const oldRemote = this.remotes.get(classified.fromKey);
+      if (!oldRemote || !item.local) return conflictOutcome(local.hash, null);
+      const moved = await this.client.move(oldRemote.dropboxPath, toDropboxPath(folder, item.local.path));
+      await this.agree(item.local.path, {
+        hash: classified.record.hash,
+        size: local.size,
+        mtime: local.mtime,
+        dropboxRev: moved.rev
+      }, classified.fromPath, (_a2 = local.bytes) != null ? _a2 : await this.app.vault.readBinary(item.local));
+      await this.removeBase(classified.fromPath);
+      return { type: "rename", fromPath: classified.fromPath, fromKey: classified.fromKey, record: classified.record };
+    };
+    this.trashLocal = async (item) => {
+      if (!item.local) return { type: "none" };
+      await trashVaultFile(this.app, item.local);
+      this.deleteRecord(item.key);
+      return { type: "trash-local" };
+    };
+    this.trashRemote = async (item) => {
+      if (!item.remote) return { type: "none" };
+      await this.client.delete(item.remote.dropboxPath);
+      this.deleteRecord(item.key);
+      return { type: "trash-remote" };
     };
     this.downloadRemote = async (item, local, localHash, remoteRev) => {
       var _a2, _b2;
@@ -2721,12 +3009,12 @@ var SyncEngine = class {
       const remoteHash = await sha256Hex(downloaded.bytes);
       const canonical = (_b2 = (_a2 = item.local) == null ? void 0 : _a2.path) != null ? _b2 : item.remote.relativePath;
       if (item.local && remoteHash === local.hash) {
-        this.putRecord(canonical, {
+        await this.agree(canonical, {
           hash: local.hash,
           size: local.size,
           mtime: local.mtime,
           dropboxRev: downloaded.rev || item.remote.rev
-        }, item.recordPath);
+        }, item.recordPath, downloaded.bytes);
         return { type: "none" };
       }
       await writeLocal(this.app.vault, canonical, downloaded.bytes);
@@ -2746,12 +3034,12 @@ var SyncEngine = class {
           const downloaded = await this.client.download(apiPath);
           const remoteHash = await sha256Hex(downloaded.bytes);
           if (remoteHash === hash) {
-            this.putRecord(item.local.path, {
+            await this.agree(item.local.path, {
               hash,
               size: bytes.byteLength,
               mtime: stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
               dropboxRev: downloaded.rev
-            }, item.recordPath);
+            }, item.recordPath, bytes);
             return { type: "none" };
           }
           return conflictOutcome(hash, downloaded.rev || remoteRev);
@@ -2759,12 +3047,12 @@ var SyncEngine = class {
         const found = await this.client.metadata(apiPath);
         return conflictOutcome(hash, (_d = found == null ? void 0 : found.rev) != null ? _d : remoteRev);
       }
-      this.putRecord(item.local.path, {
+      await this.agree(item.local.path, {
         hash,
         size: bytes.byteLength,
         mtime: stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
         dropboxRev: uploaded.rev
-      }, item.recordPath);
+      }, item.recordPath, bytes);
       return { type: "upload" };
     };
     this.writeBoth = async (folder, relativePath, bytes) => {
@@ -2780,6 +3068,7 @@ var SyncEngine = class {
       const file = this.app.vault.getAbstractFileByPath((0, import_obsidian5.normalizePath)(path));
       if (!(file instanceof import_obsidian5.TFile)) {
         this.putRecord(path, { hash: writtenHash, size: bytes.byteLength, mtime: 0, dropboxRev: rev2 });
+        await this.saveBase(path, bytes);
         return;
       }
       const mtime = file.stat.mtime;
@@ -2792,6 +3081,7 @@ var SyncEngine = class {
         mtime: stable ? mtime : 0,
         dropboxRev: rev2
       });
+      await this.saveBase(file.path, bytes);
     };
     this.putRecord = (canonical, record, previousPath) => {
       const key = pathKey(canonical);
@@ -2803,7 +3093,97 @@ var SyncEngine = class {
     };
     this.deleteRecord = (key) => {
       for (const existing of Object.keys(this.state.files)) {
-        if (pathKey(existing) === key) delete this.state.files[existing];
+        if (pathKey(existing) !== key) continue;
+        void this.removeBase(existing);
+        delete this.state.files[existing];
+      }
+    };
+    this.agree = async (path, record, previous, bytes) => {
+      this.putRecord(path, record, previous);
+      await this.saveBase(path, bytes);
+    };
+    this.count = (report, lines, label, outcome) => {
+      if (outcome.type === "upload") {
+        report.uploaded += 1;
+        lines.push({ path: label, action: "upload", note: "Send this copy to Dropbox." });
+      } else if (outcome.type === "download") {
+        report.downloaded += 1;
+        lines.push({ path: label, action: "download", note: "Save the Dropbox copy here." });
+      } else if (outcome.type === "merge") {
+        report.merged += 1;
+        if (outcome.overlap) report.overlaps.push(outcome.path);
+        lines.push({
+          path: label,
+          action: "merge",
+          note: outcome.overlap ? "Same words changed. This device is kept there." : "Changes from both sides combine."
+        });
+      } else if (outcome.type === "rename") {
+        report.renamed += 1;
+        lines.push({ path: label, action: "rename", note: `Dropbox path moves from ${outcome.fromPath}.` });
+      } else if (outcome.type === "trash-local") {
+        report.trashed += 1;
+        lines.push({ path: label, action: "trash", note: "Removed in Dropbox. This copy goes to the trash." });
+      } else if (outcome.type === "trash-remote") {
+        report.trashed += 1;
+        lines.push({ path: label, action: "trash", note: "Removed here. The Dropbox copy goes to the trash." });
+      } else if (outcome.type === "conflict") {
+        lines.push({ path: label, action: "conflict", note: "Needs a review." });
+      }
+    };
+    this.indexRenames = async (items, ui) => {
+      var _a2, _b2;
+      this.pendingRenames.clear();
+      this.renamedAway.clear();
+      if (this.initialSync) return;
+      const orphans = items.filter((item) => !item.local && item.record && item.recordPath);
+      const used = /* @__PURE__ */ new Set();
+      for (const item of items) {
+        if (ui.cancelled()) return;
+        if (!item.local || item.record || item.remote) continue;
+        const local = await inspectLocal(item.local, void 0);
+        const matches = orphans.filter((orphan) => {
+          var _a3;
+          return !used.has(orphan.key) && ((_a3 = orphan.record) == null ? void 0 : _a3.hash) === local.hash;
+        });
+        const remote = matches.length === 1 ? this.remotes.get(matches[0].key) : void 0;
+        const unchanged = !!remote && remote.rev === ((_a2 = matches[0].record) == null ? void 0 : _a2.dropboxRev);
+        if (!((_b2 = matches[0]) == null ? void 0 : _b2.record) || !matches[0].recordPath || !planRename(matches.length, unchanged, false)) continue;
+        used.add(matches[0].key);
+        this.pendingRenames.set(item.key, { fromKey: matches[0].key, fromPath: matches[0].recordPath, record: matches[0].record });
+        this.renamedAway.add(matches[0].key);
+      }
+    };
+    this.localHash = async (item) => {
+      if (!item.local) return null;
+      const local = await inspectLocal(item.local, item.record);
+      return local.hash;
+    };
+    this.baseFolder = () => {
+      return (0, import_obsidian5.normalizePath)(`${this.app.vault.configDir}/plugins/vault-anovem-sync/bases`);
+    };
+    this.baseFile = async (relativePath) => {
+      const encoded = new TextEncoder().encode(pathKey(relativePath));
+      const name = await sha256Hex(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength));
+      return `${this.baseFolder()}/${name}`;
+    };
+    this.readBase = async (relativePath) => {
+      const path = await this.baseFile(relativePath);
+      if (!await this.app.vault.adapter.exists(path)) return null;
+      return this.app.vault.adapter.readBinary(path);
+    };
+    this.saveBase = async (relativePath, bytes) => {
+      try {
+        const folder = this.baseFolder();
+        if (!await this.app.vault.adapter.exists(folder)) await this.app.vault.adapter.mkdir(folder);
+        await this.app.vault.adapter.writeBinary(await this.baseFile(relativePath), bytes);
+      } catch (e) {
+      }
+    };
+    this.removeBase = async (relativePath) => {
+      try {
+        const path = await this.baseFile(relativePath);
+        if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
+      } catch (e) {
       }
     };
   }
@@ -2868,6 +3248,14 @@ function hasSnapshot(conflict) {
 function conflictOutcome(localHash, remoteRev) {
   const kind = localHash === null ? "deleted-local" : remoteRev === null ? "deleted-remote" : "both-changed";
   return { type: "conflict", kind, localHash, remoteRev };
+}
+async function trashVaultFile(app, file) {
+  const manager = app.fileManager;
+  if (typeof manager.trashFile === "function") {
+    await manager.trashFile.call(app.fileManager, file);
+    return;
+  }
+  await app.vault.trash(file, false);
 }
 function yieldToUi2() {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -2986,6 +3374,34 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
         this.running = false;
       }
     };
+    this.previewNow = async () => {
+      if (this.running) {
+        new import_obsidian6.Notice("A sync or backup is already running.");
+        return;
+      }
+      this.running = true;
+      const modal = new SyncProgressModal(this.app, "Previewing sync");
+      modal.open();
+      try {
+        const lines = await this.engine.preview({
+          cancelled: () => modal.cancelled,
+          update: (text) => {
+            var _a2;
+            modal.setStatus(text);
+            (_a2 = this.statusBar) == null ? void 0 : _a2.setText(text);
+          }
+        });
+        modal.finish();
+        new SyncPlanModal(this.app, lines, () => {
+          void this.syncNow();
+        }).open();
+      } catch (error) {
+        modal.finish();
+        new import_obsidian6.Notice(errorMessage(error));
+      } finally {
+        this.running = false;
+      }
+    };
     this.updateFromGitHub = async () => {
       try {
         const listed = await (0, import_obsidian6.requestUrl)({
@@ -3065,6 +3481,13 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
       name: "Sync both ways",
       callback: () => {
         void this.syncNow();
+      }
+    });
+    this.addCommand({
+      id: "preview-sync",
+      name: "Preview sync",
+      callback: () => {
+        void this.previewNow();
       }
     });
     this.addCommand({

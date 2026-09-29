@@ -8,6 +8,18 @@
   overflow-wrap: anywhere;
 }
 
+.vault-sync-plan-row {
+  display: grid;
+  grid-template-columns: 6.5em minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.vault-sync-plan-action {
+  font-weight: var(--font-semibold);
+}
+
 .vault-sync-conflict-buttons {
   display: flex;
   flex-wrap: wrap;
