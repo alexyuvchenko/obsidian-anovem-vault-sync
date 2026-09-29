@@ -309,15 +309,51 @@ export default class VaultSyncPlugin extends Plugin {
   };
 }
 
+type PluginsApi = {
+  disablePlugin(pluginId: string): Promise<void>;
+  enablePlugin(pluginId: string): Promise<void>;
+  loadManifests?: () => Promise<void>;
+};
+
+type SettingsApi = {
+  activeTab?: { id?: string } | null;
+  containerEl?: HTMLElement;
+  openTabById?: (id: string) => void;
+};
+
 async function reloadPlugin(app: VaultSyncPlugin["app"], id: string): Promise<void> {
-  const plugins = (app as VaultSyncPlugin["app"] & {
-    plugins: {
-      disablePlugin(pluginId: string): Promise<void>;
-      enablePlugin(pluginId: string): Promise<void>;
-    };
-  }).plugins;
-  await plugins.disablePlugin(id);
-  await plugins.enablePlugin(id);
+  const plugins = (app as VaultSyncPlugin["app"] & { plugins: PluginsApi }).plugins;
+  const settings = (app as VaultSyncPlugin["app"] & { setting?: SettingsApi }).setting;
+  const reopenSettings = !!settings?.containerEl?.isShown() && settings.activeTab?.id === id;
+  const storage = window.localStorage;
+  const previous = storage.getItem("debug-plugin");
+  storage.setItem("debug-plugin", "1");
+  try {
+    await plugins.disablePlugin(id);
+    await plugins.loadManifests?.();
+    dropLoadedPluginScript(id);
+    await new Promise<void>((resolve, reject) => {
+      window.setTimeout(() => {
+        void plugins.enablePlugin(id).then(() => {
+          if (reopenSettings) settings?.openTabById?.(id);
+          resolve();
+        }, reject);
+      }, 50);
+    });
+  } finally {
+    if (previous === null) storage.removeItem("debug-plugin");
+    else storage.setItem("debug-plugin", previous);
+  }
+}
+
+function dropLoadedPluginScript(id: string): void {
+  const req = (window as Window & { require?: { cache?: Record<string, unknown> } }).require;
+  const cache = req?.cache;
+  if (!cache) return;
+  const needle = `/${id}/main.js`.toLowerCase();
+  for (const key of Object.keys(cache)) {
+    if (key.replace(/\\/g, "/").toLowerCase().includes(needle)) delete cache[key];
+  }
 }
 
 function bannerHosts(container: HTMLElement): HTMLElement[] {

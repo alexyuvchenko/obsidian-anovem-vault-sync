@@ -3621,9 +3621,39 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
   }
 };
 async function reloadPlugin(app, id) {
+  var _a2, _b2, _c;
   const plugins = app.plugins;
-  await plugins.disablePlugin(id);
-  await plugins.enablePlugin(id);
+  const settings = app.setting;
+  const reopenSettings = !!((_a2 = settings == null ? void 0 : settings.containerEl) == null ? void 0 : _a2.isShown()) && ((_b2 = settings.activeTab) == null ? void 0 : _b2.id) === id;
+  const storage = window.localStorage;
+  const previous = storage.getItem("debug-plugin");
+  storage.setItem("debug-plugin", "1");
+  try {
+    await plugins.disablePlugin(id);
+    await ((_c = plugins.loadManifests) == null ? void 0 : _c.call(plugins));
+    dropLoadedPluginScript(id);
+    await new Promise((resolve, reject) => {
+      window.setTimeout(() => {
+        void plugins.enablePlugin(id).then(() => {
+          var _a3;
+          if (reopenSettings) (_a3 = settings == null ? void 0 : settings.openTabById) == null ? void 0 : _a3.call(settings, id);
+          resolve();
+        }, reject);
+      }, 50);
+    });
+  } finally {
+    if (previous === null) storage.removeItem("debug-plugin");
+    else storage.setItem("debug-plugin", previous);
+  }
+}
+function dropLoadedPluginScript(id) {
+  const req = window.require;
+  const cache = req == null ? void 0 : req.cache;
+  if (!cache) return;
+  const needle = `/${id}/main.js`.toLowerCase();
+  for (const key of Object.keys(cache)) {
+    if (key.replace(/\\/g, "/").toLowerCase().includes(needle)) delete cache[key];
+  }
 }
 function bannerHosts(container) {
   const found = [".markdown-source-view", ".markdown-reading-view"].map((selector) => container.querySelector(selector)).filter((node) => node instanceof HTMLElement);
