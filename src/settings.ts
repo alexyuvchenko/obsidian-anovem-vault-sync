@@ -25,7 +25,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Plugin update")
-      .setDesc(`Installed ${this.plugin.manifest.version}. Downloads the latest GitHub release into this vault. Reload Obsidian after it finishes.`)
+      .setDesc(`Installed ${this.plugin.manifest.version}. Downloads the latest GitHub release into this vault and reloads the plugin. Obsidian stays open.`)
       .addButton((button) => {
         button.setButtonText("Install or update").setCta();
         button.onClick(() => {

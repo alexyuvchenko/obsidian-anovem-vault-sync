@@ -2073,7 +2073,7 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
     containerEl.createEl("p", {
       text: "While Obsidian is open, the vault syncs in the background. One run uploads changes from this device and downloads changes from Dropbox. It also syncs when you return to the app. If a file changed on both devices, or it was removed on only one device, it is left in place. Resolve it in the vault, then sync again."
     });
-    new import_obsidian4.Setting(containerEl).setName("Plugin update").setDesc(`Installed ${this.plugin.manifest.version}. Downloads the latest GitHub release into this vault. Reload Obsidian after it finishes.`).addButton((button) => {
+    new import_obsidian4.Setting(containerEl).setName("Plugin update").setDesc(`Installed ${this.plugin.manifest.version}. Downloads the latest GitHub release into this vault and reloads the plugin. Obsidian stays open.`).addButton((button) => {
       button.setButtonText("Install or update").setCta();
       button.onClick(() => {
         void this.plugin.updateFromGitHub();
@@ -2725,7 +2725,8 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
           const downloaded = await (0, import_obsidian6.requestUrl)({ url: plan.files[name] });
           await this.app.vault.adapter.writeBinary(`${dir}/${name}`, downloaded.arrayBuffer);
         }
-        new import_obsidian6.Notice(`Installed ${plan.version}. Reload Obsidian to use it.`);
+        new import_obsidian6.Notice(`Installed ${plan.version}. Reloading the plugin.`);
+        await reloadPlugin(this.app, this.manifest.id);
       } catch (error) {
         new import_obsidian6.Notice(errorMessage(error));
       }
@@ -2834,6 +2835,11 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
     new ConflictModal(this.app, this).open();
   }
 };
+async function reloadPlugin(app, id) {
+  const plugins = app.plugins;
+  await plugins.disablePlugin(id);
+  await plugins.enablePlugin(id);
+}
 function normalizeSyncMinutes(value) {
   if (!Number.isFinite(value)) return 5;
   return Math.min(240, Math.max(1, Math.round(value)));

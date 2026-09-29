@@ -8,7 +8,7 @@ Requires Obsidian 1.5.0 or newer.
 
 ## Install
 
-From a vault that already has the plugin, open settings and click **Install or update**, or run **Install or update plugin from GitHub**. That downloads `manifest.json`, `main.js`, and `styles.css` from the latest [GitHub release](https://github.com/alexyuvchenko/obsidian-vault-anovem-sync/releases) and writes them into this vault. Reload Obsidian afterward.
+From a vault that already has the plugin, open settings and click **Install or update**, or run **Install or update plugin from GitHub**. That downloads `manifest.json`, `main.js`, and `styles.css` from the latest [GitHub release](https://github.com/alexyuvchenko/obsidian-vault-anovem-sync/releases), writes them into this vault, and reloads the plugin. Obsidian stays open.
 
 To install into a vault that does not have the plugin yet:
 

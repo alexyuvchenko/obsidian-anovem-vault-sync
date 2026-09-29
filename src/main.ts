@@ -170,7 +170,8 @@ export default class VaultSyncPlugin extends Plugin {
         const downloaded = await requestUrl({ url: plan.files[name] });
         await this.app.vault.adapter.writeBinary(`${dir}/${name}`, downloaded.arrayBuffer);
       }
-      new Notice(`Installed ${plan.version}. Reload Obsidian to use it.`);
+      new Notice(`Installed ${plan.version}. Reloading the plugin.`);
+      await reloadPlugin(this.app, this.manifest.id);
     } catch (error) {
       new Notice(errorMessage(error));
     }
@@ -212,6 +213,17 @@ export default class VaultSyncPlugin extends Plugin {
       this.running = false;
     }
   };
+}
+
+async function reloadPlugin(app: VaultSyncPlugin["app"], id: string): Promise<void> {
+  const plugins = (app as VaultSyncPlugin["app"] & {
+    plugins: {
+      disablePlugin(pluginId: string): Promise<void>;
+      enablePlugin(pluginId: string): Promise<void>;
+    };
+  }).plugins;
+  await plugins.disablePlugin(id);
+  await plugins.enablePlugin(id);
 }
 
 function normalizeSyncMinutes(value: number): number {
