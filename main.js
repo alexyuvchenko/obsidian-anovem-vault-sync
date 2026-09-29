@@ -1290,6 +1290,18 @@ function headerJson(value) {
     return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
   });
 }
+function conflictBackupPath(relativePath, timestamp, side) {
+  const normalized = normalizeRelative(relativePath);
+  const slash = normalized.lastIndexOf("/");
+  const dir = slash >= 0 ? normalized.slice(0, slash + 1) : "";
+  const file = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  const dot = file.lastIndexOf(".");
+  const stem = dot > 0 ? file.slice(0, dot) : file;
+  const ext = dot > 0 ? file.slice(dot) : "";
+  const stamp = timestamp.replace(/[^\d-]/g, "");
+  if (!stamp || !stem) throw new Error("Cannot name a conflict backup.");
+  return `${dir}${stamp}_${stem}_${side}_backup${ext}`;
+}
 function conflictText(kind) {
   if (kind === "both-changed") {
     return "Changed on this device and in Dropbox. Neither copy was written. Edit the file, then sync again to send your version.";
@@ -1620,6 +1632,88 @@ function errorMessage(error) {
 
 // src/modals.ts
 var import_obsidian3 = require("obsidian");
+
+// src/merge.ts
+function decodeUtf8(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (e) {
+    return null;
+  }
+}
+function diffRows(local, remote) {
+  const left = local === "" ? [] : local.split("\n");
+  const right = remote === "" ? [] : remote.split("\n");
+  if (left.length * right.length > 25e4) {
+    return [{ kind: "change", id: 0, local, remote }];
+  }
+  const ops = lineOps(left, right);
+  const rows = [];
+  let id = 0;
+  let index = 0;
+  while (index < ops.length) {
+    const op = ops[index];
+    if (op.tag === "same") {
+      rows.push({ kind: "same", id: id++, local: op.line, remote: op.line });
+      index += 1;
+      continue;
+    }
+    const localLines = [];
+    const remoteLines = [];
+    while (index < ops.length && ops[index].tag !== "same") {
+      if (ops[index].tag === "local") localLines.push(ops[index].line);
+      else remoteLines.push(ops[index].line);
+      index += 1;
+    }
+    rows.push({
+      kind: "change",
+      id: id++,
+      local: localLines.join("\n"),
+      remote: remoteLines.join("\n")
+    });
+  }
+  return rows;
+}
+function textFromChoices(rows, choices) {
+  const lines = [];
+  for (const row of rows) {
+    const picked = row.kind === "change" && choices.get(row.id) === "remote" ? row.remote : row.local;
+    if (row.kind === "same") lines.push(row.local);
+    else if (picked.length > 0) lines.push(picked);
+  }
+  return lines.join("\n");
+}
+function lineOps(left, right) {
+  const rows = left.length;
+  const cols = right.length;
+  const scores = Array.from({ length: rows + 1 }, () => new Array(cols + 1).fill(0));
+  for (let i2 = rows - 1; i2 >= 0; i2--) {
+    for (let j2 = cols - 1; j2 >= 0; j2--) {
+      scores[i2][j2] = left[i2] === right[j2] ? scores[i2 + 1][j2 + 1] + 1 : Math.max(scores[i2 + 1][j2], scores[i2][j2 + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < rows && j < cols) {
+    if (left[i] === right[j]) {
+      ops.push({ tag: "same", line: left[i] });
+      i += 1;
+      j += 1;
+    } else if (scores[i + 1][j] >= scores[i][j + 1]) {
+      ops.push({ tag: "local", line: left[i] });
+      i += 1;
+    } else {
+      ops.push({ tag: "remote", line: right[j] });
+      j += 1;
+    }
+  }
+  while (i < rows) ops.push({ tag: "local", line: left[i++] });
+  while (j < cols) ops.push({ tag: "remote", line: right[j++] });
+  return ops;
+}
+
+// src/modals.ts
 var SyncProgressModal = class extends import_obsidian3.Modal {
   constructor(app, title = "Syncing") {
     super(app);
@@ -1666,24 +1760,212 @@ var ConflictModal = class extends import_obsidian3.Modal {
       return;
     }
     contentEl.createEl("p", {
-      text: "Resolve these in the vault, then sync again. A conflict is left unchanged until you edit or delete the file."
+      text: "Open a file to merge this device and Dropbox. Saving writes that result in both places and keeps a backup of each previous copy."
     });
     for (const conflict of conflicts) {
       const row = contentEl.createDiv({ cls: "vault-sync-conflict" });
       row.createEl("div", { cls: "vault-sync-conflict-path", text: conflict.path });
       row.createEl("div", { cls: "setting-item-description", text: conflictText(conflict.kind) });
-      const file = this.app.vault.getAbstractFileByPath(conflict.path);
-      if (file instanceof import_obsidian3.TFile) {
-        const buttons = row.createDiv({ cls: "vault-sync-conflict-buttons" });
-        const open = buttons.createEl("button", { text: "Open" });
-        open.onclick = () => {
-          void this.app.workspace.getLeaf(false).openFile(file);
-          this.close();
-        };
-      }
+      const buttons = row.createDiv({ cls: "vault-sync-conflict-buttons" });
+      const open = buttons.createEl("button", { text: "Open" });
+      open.onclick = () => {
+        this.close();
+        new ConflictResolveModal(this.app, this.plugin, conflict.path, () => this.plugin.showConflicts()).open();
+      };
     }
   }
 };
+var ConflictResolveModal = class extends import_obsidian3.Modal {
+  constructor(app, plugin, path, onDone) {
+    super(app);
+    this.plugin = plugin;
+    this.path = path;
+    this.onDone = onDone;
+    this.choices = /* @__PURE__ */ new Map();
+    this.rows = [];
+    this.result = null;
+    this.manual = false;
+    this.binary = null;
+    this.saving = false;
+    this.load = async () => {
+      try {
+        const sides = await this.plugin.engine.readConflictBytes(this.path);
+        if (!sides.local && !sides.remote) throw new Error("This file is gone on this device and in Dropbox.");
+        const localText = sides.local ? decodeUtf8(sides.local) : "";
+        const remoteText = sides.remote ? decodeUtf8(sides.remote) : "";
+        if (sides.local && localText === null || sides.remote && remoteText === null) {
+          this.renderBinary(sides.local, sides.remote);
+          return;
+        }
+        this.rows = diffRows(localText != null ? localText : "", remoteText != null ? remoteText : "");
+        for (const row of this.rows) {
+          if (row.kind === "change") this.choices.set(row.id, "local");
+        }
+        this.renderText();
+      } catch (error) {
+        this.contentEl.empty();
+        this.contentEl.createEl("p", { text: errorMessage(error) });
+      }
+    };
+    this.save = async () => {
+      var _a2, _b2, _c;
+      if (this.saving) return;
+      this.saving = true;
+      try {
+        const encoded = new TextEncoder().encode((_b2 = (_a2 = this.result) == null ? void 0 : _a2.value) != null ? _b2 : "");
+        const bytes = (_c = this.binary) != null ? _c : encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+        const backups = await this.plugin.engine.saveResolution(this.path, bytes, /* @__PURE__ */ new Date());
+        new import_obsidian3.Notice(backups.length > 0 ? `Resolved ${this.path}. Backups: ${backups.join(", ")}` : `Resolved ${this.path}.`);
+        this.close();
+        this.onDone();
+      } catch (error) {
+        this.saving = false;
+        new import_obsidian3.Notice(errorMessage(error));
+      }
+    };
+  }
+  onOpen() {
+    this.modalEl.addClass("vault-sync-merge-modal");
+    this.setTitle(this.path);
+    this.contentEl.createEl("p", { text: "Reading this device and Dropbox\u2026" });
+    void this.load();
+  }
+  renderText() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: "Left is this device. Right is Dropbox. Pick a side for each change, or edit the result. Save replaces both copies."
+    });
+    const columns = contentEl.createDiv({ cls: "vault-sync-merge-columns" });
+    columns.createEl("div", { cls: "vault-sync-merge-heading", text: "This device" });
+    columns.createEl("div", { cls: "vault-sync-merge-heading", text: "Dropbox" });
+    for (const row of this.rows) {
+      if (row.kind === "same") {
+        const same = columns.createDiv({ cls: "vault-sync-merge-same" });
+        same.createEl("pre", { text: row.local });
+        continue;
+      }
+      this.hunk(columns, row, "local");
+      this.hunk(columns, row, "remote");
+    }
+    const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
+    const useLocal = buttons.createEl("button", { text: "Use this device" });
+    useLocal.onclick = () => this.pickAll("local");
+    const useRemote = buttons.createEl("button", { text: "Use Dropbox" });
+    useRemote.onclick = () => this.pickAll("remote");
+    contentEl.createEl("div", { cls: "vault-sync-merge-heading", text: "Result" });
+    this.result = contentEl.createEl("textarea", { cls: "vault-sync-merge-result" });
+    this.markChoices();
+    this.result.value = textFromChoices(this.rows, this.choices);
+    this.result.addEventListener("input", () => {
+      this.manual = true;
+    });
+    this.saveButton(contentEl);
+  }
+  hunk(parent, row, side) {
+    const block = parent.createDiv({ cls: "vault-sync-merge-hunk" });
+    block.createEl("pre", { text: side === "local" ? row.local : row.remote });
+    const button = block.createEl("button", { text: side === "local" ? "Accept left" : "Accept right" });
+    button.onclick = () => {
+      this.choices.set(row.id, side);
+      this.markChoices();
+      if (!this.manual && this.result) this.result.value = textFromChoices(this.rows, this.choices);
+    };
+  }
+  markChoices() {
+    const blocks = this.contentEl.querySelectorAll(".vault-sync-merge-hunk");
+    let index = 0;
+    for (const row of this.rows) {
+      if (row.kind !== "change") continue;
+      const choice = this.choices.get(row.id);
+      const left = blocks[index];
+      const right = blocks[index + 1];
+      left == null ? void 0 : left.toggleClass("is-chosen", choice === "local");
+      right == null ? void 0 : right.toggleClass("is-chosen", choice === "remote");
+      index += 2;
+    }
+  }
+  pickAll(side) {
+    for (const row of this.rows) {
+      if (row.kind === "change") this.choices.set(row.id, side);
+    }
+    this.manual = false;
+    this.markChoices();
+    if (this.result) this.result.value = textFromChoices(this.rows, this.choices);
+  }
+  renderBinary(local, remote) {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", { text: "This file is not text. Choose which copy becomes the resolved file." });
+    const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
+    if (local) {
+      const keep = buttons.createEl("button", { text: "Use this device" });
+      keep.onclick = () => {
+        this.binary = local;
+      };
+    }
+    if (remote) {
+      const keep = buttons.createEl("button", { text: "Use Dropbox" });
+      keep.onclick = () => {
+        this.binary = remote;
+      };
+    }
+    this.binary = local != null ? local : remote;
+    this.saveButton(contentEl);
+  }
+  saveButton(parent) {
+    const buttons = parent.createDiv({ cls: "modal-button-container" });
+    const save = buttons.createEl("button", { cls: "mod-cta", text: "Save resolved copy" });
+    save.onclick = () => {
+      void this.save();
+    };
+  }
+};
+
+// src/release.ts
+var RELEASE_REPO = "alexyuvchenko/obsidian-vault-anovem-sync";
+var PLUGIN_FILES = ["manifest.json", "main.js", "styles.css"];
+function compareVersions(left, right) {
+  var _a2, _b2;
+  const a = versionParts(left);
+  const b = versionParts(right);
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    const diff = ((_a2 = a[i]) != null ? _a2 : 0) - ((_b2 = b[i]) != null ? _b2 : 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+function parseLatestRelease(body, current) {
+  if (!body || typeof body !== "object") throw new Error("GitHub did not return a release.");
+  const release = body;
+  const version = versionLabel(release.tag_name);
+  if (!version) throw new Error("GitHub release has no version.");
+  if (compareVersions(version, current) <= 0) return null;
+  if (!Array.isArray(release.assets)) throw new Error("GitHub release has no plugin files.");
+  const files = {};
+  for (const name of PLUGIN_FILES) {
+    const asset = release.assets.find((item) => {
+      return !!item && typeof item === "object" && item.name === name;
+    });
+    const url = asset == null ? void 0 : asset.browser_download_url;
+    if (typeof url !== "string" || !url.startsWith("https://")) {
+      throw new Error(`GitHub release is missing ${name}.`);
+    }
+    files[name] = url;
+  }
+  return { version, current, files };
+}
+function versionLabel(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/^v/i, "");
+}
+function versionParts(value) {
+  return versionLabel(value).split(".").map((part) => {
+    const match = /^(\d+)/.exec(part);
+    return match ? Number(match[1]) : 0;
+  });
+}
 
 // src/settings.ts
 var import_obsidian4 = require("obsidian");
@@ -1705,6 +1987,12 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
     });
     containerEl.createEl("p", {
       text: "While Obsidian is open, the vault syncs in the background. One run uploads changes from this device and downloads changes from Dropbox. It also syncs when you return to the app. If a file changed on both devices, or it was removed on only one device, it is left in place. Resolve it in the vault, then sync again."
+    });
+    new import_obsidian4.Setting(containerEl).setName("Plugin update").setDesc(`Installed ${this.plugin.manifest.version}. Downloads the latest GitHub release into this vault. Reload Obsidian after it finishes.`).addButton((button) => {
+      button.setButtonText("Install or update").setCta();
+      button.onClick(() => {
+        void this.plugin.updateFromGitHub();
+      });
     });
     new import_obsidian4.Setting(containerEl).setName("Dropbox app key").setDesc("Create a Scoped access app in the Dropbox App Console. On Permissions, enable files.metadata.read, files.content.read, files.content.write, and account_info.read, then click Submit. Paste only the App key. It is 15 characters. Do not paste the App secret. Full Dropbox access uses the folder below. App folder access keeps files inside that app; set the folder to / to use the root of the app folder.").addText((text) => {
       text.setPlaceholder("App key").setValue(this.plugin.settings.appKey);
@@ -1885,6 +2173,28 @@ var SyncEngine = class {
     this.state = state;
     this.persist = persist;
     this.client = client;
+    this.readConflictBytes = async (relativePath) => {
+      const normalized = (0, import_obsidian5.normalizePath)(relativePath);
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      const local = file instanceof import_obsidian5.TFile ? await this.app.vault.readBinary(file) : null;
+      const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
+      const meta = await this.client.metadata(toDropboxPath(folder, normalized));
+      if (!meta) return { local, remote: null };
+      const downloaded = await this.client.download(meta.pathDisplay);
+      return { local, remote: downloaded.bytes };
+    };
+    this.saveResolution = async (relativePath, resolved, now) => {
+      const sides = await this.readConflictBytes(relativePath);
+      const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
+      const stamp = formatTimestamp(now);
+      const backups = [];
+      if (sides.local) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "local"), sides.local));
+      if (sides.remote) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "dropbox"), sides.remote));
+      await this.writeBoth(folder, relativePath, resolved);
+      this.state.conflicts = this.state.conflicts.filter((item) => pathKey(item.path) !== pathKey(relativePath));
+      await this.persist();
+      return backups;
+    };
     this.sync = async (ui) => {
       const report = { uploaded: 0, downloaded: 0, conflicts: 0, failed: [], cancelled: false };
       const nextConflicts = [];
@@ -2096,6 +2406,14 @@ var SyncEngine = class {
       }, item.recordPath);
       return { type: "upload" };
     };
+    this.writeBoth = async (folder, relativePath, bytes) => {
+      const normalized = (0, import_obsidian5.normalizePath)(relativePath);
+      await writeLocal(this.app.vault, normalized, bytes);
+      const uploaded = await this.client.upload(toDropboxPath(folder, normalized), bytes, "overwrite");
+      if (uploaded.conflict) throw new Error(`Dropbox rejected ${normalized}.`);
+      await this.rememberWritten(normalized, uploaded.rev, bytes);
+      return normalized;
+    };
     this.rememberWritten = async (path, rev2, bytes) => {
       const writtenHash = await sha256Hex(bytes);
       const file = this.app.vault.getAbstractFileByPath((0, import_obsidian5.normalizePath)(path));
@@ -2293,7 +2611,7 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
         const conflictsChanged = this.state.conflicts.length !== conflictsBefore;
         const moved = report.uploaded > 0 || report.downloaded > 0 || report.failed.length > 0 || report.cancelled;
         if (!background || moved || conflictsChanged) new import_obsidian6.Notice(this.settings.lastSyncSummary);
-        if (!background && this.state.conflicts.length > 0) this.showConflicts();
+        if (this.state.conflicts.length > 0 && (!background || conflictsChanged)) this.showConflicts();
       } catch (error) {
         modal == null ? void 0 : modal.finish();
         const message = errorMessage(error);
@@ -2303,6 +2621,28 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
         await this.persist();
       } finally {
         this.running = false;
+      }
+    };
+    this.updateFromGitHub = async () => {
+      try {
+        const listed = await (0, import_obsidian6.requestUrl)({
+          url: `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`,
+          headers: { Accept: "application/vnd.github+json" }
+        });
+        const plan = parseLatestRelease(listed.json, this.manifest.version);
+        if (!plan) {
+          new import_obsidian6.Notice(`Vault Anovem Sync ${this.manifest.version} is current.`);
+          return;
+        }
+        const dir = this.manifest.dir;
+        if (!dir) throw new Error("Plugin folder is missing.");
+        for (const name of PLUGIN_FILES) {
+          const downloaded = await (0, import_obsidian6.requestUrl)({ url: plan.files[name] });
+          await this.app.vault.adapter.writeBinary(`${dir}/${name}`, downloaded.arrayBuffer);
+        }
+        new import_obsidian6.Notice(`Installed ${plan.version}. Reload Obsidian to use it.`);
+      } catch (error) {
+        new import_obsidian6.Notice(errorMessage(error));
       }
     };
     this.backupNow = async () => {
@@ -2369,6 +2709,13 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
       callback: () => this.showConflicts()
     });
     this.addCommand({
+      id: "update-plugin",
+      name: "Install or update plugin from GitHub",
+      callback: () => {
+        void this.updateFromGitHub();
+      }
+    });
+    this.addCommand({
       id: "backup",
       name: "Backup vault",
       callback: () => {
@@ -2387,6 +2734,7 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
     }
     this.scheduleBackgroundSync();
     this.app.workspace.onLayoutReady(() => {
+      if (this.state.conflicts.length > 0) this.showConflicts();
       const start = window.setTimeout(() => void this.syncNow("background"), 5e3);
       this.register(() => window.clearTimeout(start));
     });

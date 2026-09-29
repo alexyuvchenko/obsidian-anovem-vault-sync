@@ -78,6 +78,19 @@ export function headerJson(value: unknown): string {
   });
 }
 
+export function conflictBackupPath(relativePath: string, timestamp: string, side: "local" | "dropbox"): string {
+  const normalized = normalizeRelative(relativePath);
+  const slash = normalized.lastIndexOf("/");
+  const dir = slash >= 0 ? normalized.slice(0, slash + 1) : "";
+  const file = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  const dot = file.lastIndexOf(".");
+  const stem = dot > 0 ? file.slice(0, dot) : file;
+  const ext = dot > 0 ? file.slice(dot) : "";
+  const stamp = timestamp.replace(/[^\d-]/g, "");
+  if (!stamp || !stem) throw new Error("Cannot name a conflict backup.");
+  return `${dir}${stamp}_${stem}_${side}_backup${ext}`;
+}
+
 export function conflictText(kind: ConflictKind): string {
   if (kind === "both-changed") {
     return "Changed on this device and in Dropbox. Neither copy was written. Edit the file, then sync again to send your version.";

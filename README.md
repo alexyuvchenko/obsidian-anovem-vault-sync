@@ -8,7 +8,17 @@ Requires Obsidian 1.5.0 or newer.
 
 ## Install
 
-Copy the plugin into the vault that is open in Obsidian:
+From a vault that already has the plugin, open settings and click **Install or update**, or run **Install or update plugin from GitHub**. That downloads `manifest.json`, `main.js`, and `styles.css` from the latest [GitHub release](https://github.com/alexyuvchenko/obsidian-vault-anovem-sync/releases) and writes them into this vault. Reload Obsidian afterward.
+
+To install into a vault that does not have the plugin yet:
+
+```bash
+./scripts/install-release.sh "/path/to/vault"
+```
+
+A release is published when a `v*` tag is pushed. The tag version should match `manifest.json`, and `versions.json` should map that version to the minimum Obsidian version.
+
+Copy a local build into the vault that is open in Obsidian:
 
 ```bash
 ./scripts/copy-plugin.sh
@@ -54,13 +64,20 @@ Background sync is on by default. While Obsidian is open, the vault syncs every 
 
 ### Conflicts
 
-Conflicts are resolved in the vault, then synced again. The plugin does not pick a side and does not delete the Dropbox copy on its own.
+The conflict list opens when Obsidian starts if any conflicts are already recorded, and again after a sync that still has conflicts. The plugin does not pick a side on its own.
 
-- **Changed on both devices.** Edit the file, then sync again. That version is sent. If you leave the file and the other device edits it, that version is downloaded.
-- **Missing on this device, still in Dropbox.** Put the file back in the vault, then sync again.
-- **On this device, missing from Dropbox.** Edit it and sync again to send it, or delete it here and sync again to drop it.
+**Open** shows this device on the left and Dropbox on the right. Accept a side for each changed block, or edit the result. **Save resolved copy** writes that result over the file on this device and in Dropbox.
 
-**Show sync conflicts** lists these files. **Open** opens a note that is on this device.
+Before replacing the file, each existing copy is saved beside it and uploaded:
+
+```text
+notes/20260929-183045_Daily_local_backup.md
+notes/20260929-183045_Daily_dropbox_backup.md
+```
+
+The timestamp is local time, `YYYYMMDD-HHmmss`. The side name keeps both previous copies. A later sync leaves those backups alone once they match on both sides.
+
+Editing a conflicted file outside this tool still sends that edit on the next sync if Dropbox has not changed again. Deleting it here, while Dropbox is unchanged, still drops the Dropbox copy on the next sync.
 
 ## Backup
 

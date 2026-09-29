@@ -1,7 +1,8 @@
 import { normalizePath, TFile, type App, type Vault } from "obsidian";
+import { formatTimestamp } from "./archive";
 import { DropboxClient, DropboxError } from "./dropbox";
 import { sha256Hex } from "./hash";
-import { isIncluded, normalizeAttachmentsFolder, normalizeDropboxFolder, pathKey, syncVaultFolder, toDropboxPath } from "./paths";
+import { conflictBackupPath, isIncluded, normalizeAttachmentsFolder, normalizeDropboxFolder, pathKey, syncVaultFolder, toDropboxPath } from "./paths";
 import { planAfterCompare, planManualResolution, planSync, type Presence } from "./plan";
 import type { ConflictItem, ConflictKind, FileRecord, RemoteFile, Settings, SyncReport, SyncState } from "./types";
 
@@ -44,6 +45,30 @@ export class SyncEngine {
     private readonly persist: () => Promise<void>,
     private readonly client: DropboxClient,
   ) {}
+
+  readConflictBytes = async (relativePath: string): Promise<{ local: ArrayBuffer | null; remote: ArrayBuffer | null }> => {
+    const normalized = normalizePath(relativePath);
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    const local = file instanceof TFile ? await this.app.vault.readBinary(file) : null;
+    const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
+    const meta = await this.client.metadata(toDropboxPath(folder, normalized));
+    if (!meta) return { local, remote: null };
+    const downloaded = await this.client.download(meta.pathDisplay);
+    return { local, remote: downloaded.bytes };
+  };
+
+  saveResolution = async (relativePath: string, resolved: ArrayBuffer, now: Date): Promise<string[]> => {
+    const sides = await this.readConflictBytes(relativePath);
+    const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
+    const stamp = formatTimestamp(now);
+    const backups: string[] = [];
+    if (sides.local) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "local"), sides.local));
+    if (sides.remote) backups.push(await this.writeBoth(folder, conflictBackupPath(relativePath, stamp, "dropbox"), sides.remote));
+    await this.writeBoth(folder, relativePath, resolved);
+    this.state.conflicts = this.state.conflicts.filter((item) => pathKey(item.path) !== pathKey(relativePath));
+    await this.persist();
+    return backups;
+  };
 
   sync = async (ui: SyncUi): Promise<SyncReport> => {
     const report: SyncReport = { uploaded: 0, downloaded: 0, conflicts: 0, failed: [], cancelled: false };
@@ -281,6 +306,15 @@ export class SyncEngine {
       dropboxRev: uploaded.rev,
     }, item.recordPath);
     return { type: "upload" };
+  };
+
+  private writeBoth = async (folder: string, relativePath: string, bytes: ArrayBuffer): Promise<string> => {
+    const normalized = normalizePath(relativePath);
+    await writeLocal(this.app.vault, normalized, bytes);
+    const uploaded = await this.client.upload(toDropboxPath(folder, normalized), bytes, "overwrite");
+    if (uploaded.conflict) throw new Error(`Dropbox rejected ${normalized}.`);
+    await this.rememberWritten(normalized, uploaded.rev, bytes);
+    return normalized;
   };
 
   private rememberWritten = async (path: string, rev: string, bytes: ArrayBuffer): Promise<void> => {

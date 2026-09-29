@@ -18,3 +18,52 @@
 .vault-sync-progress-line {
   margin-bottom: 12px;
 }
+
+.vault-sync-merge-modal {
+  width: min(1100px, 92vw);
+}
+
+.vault-sync-merge-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  max-height: 42vh;
+  overflow: auto;
+}
+
+.vault-sync-merge-heading {
+  font-weight: var(--font-semibold);
+  margin-top: 8px;
+}
+
+.vault-sync-merge-same {
+  grid-column: 1 / -1;
+}
+
+.vault-sync-merge-same pre,
+.vault-sync-merge-hunk pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.vault-sync-merge-hunk {
+  border: 1px solid var(--background-modifier-border);
+  padding: 6px;
+}
+
+.vault-sync-merge-hunk.is-chosen {
+  border-color: var(--interactive-accent);
+}
+
+.vault-sync-merge-result {
+  width: 100%;
+  min-height: 24vh;
+  font-family: var(--font-monospace);
+}
+
+@media (max-width: 700px) {
+  .vault-sync-merge-columns {
+    grid-template-columns: 1fr;
+  }
+}

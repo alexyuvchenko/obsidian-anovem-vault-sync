@@ -24,6 +24,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     });
 
     new Setting(containerEl)
+      .setName("Plugin update")
+      .setDesc(`Installed ${this.plugin.manifest.version}. Downloads the latest GitHub release into this vault. Reload Obsidian after it finishes.`)
+      .addButton((button) => {
+        button.setButtonText("Install or update").setCta();
+        button.onClick(() => {
+          void this.plugin.updateFromGitHub();
+        });
+      });
+
+    new Setting(containerEl)
       .setName("Dropbox app key")
       .setDesc("Create a Scoped access app in the Dropbox App Console. On Permissions, enable files.metadata.read, files.content.read, files.content.write, and account_info.read, then click Submit. Paste only the App key. It is 15 characters. Do not paste the App secret. Full Dropbox access uses the folder below. App folder access keeps files inside that app; set the folder to / to use the root of the app folder.")
       .addText((text) => {

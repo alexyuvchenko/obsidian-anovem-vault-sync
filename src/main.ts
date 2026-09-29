@@ -1,9 +1,10 @@
-import { addIcon, Notice, Platform, Plugin } from "obsidian";
+import { addIcon, Notice, Platform, Plugin, requestUrl } from "obsidian";
 import { normalizeBackupFolder, type BackupFormat } from "./archive";
 import { BackupCancelled, createBackup } from "./backup";
 import { DropboxClient } from "./dropbox";
 import { errorMessage } from "./errors";
 import { ConflictModal, SyncProgressModal } from "./modals";
+import { PLUGIN_FILES, RELEASE_REPO, parseLatestRelease } from "./release";
 import { VaultSyncSettingTab } from "./settings";
 import { summarize, SyncEngine } from "./sync";
 import { DEFAULT_SETTINGS, emptyState, type PluginData, type Settings, type SyncState } from "./types";
@@ -50,6 +51,13 @@ export default class VaultSyncPlugin extends Plugin {
       callback: () => this.showConflicts(),
     });
     this.addCommand({
+      id: "update-plugin",
+      name: "Install or update plugin from GitHub",
+      callback: () => {
+        void this.updateFromGitHub();
+      },
+    });
+    this.addCommand({
       id: "backup",
       name: "Backup vault",
       callback: () => {
@@ -68,6 +76,7 @@ export default class VaultSyncPlugin extends Plugin {
     }
     this.scheduleBackgroundSync();
     this.app.workspace.onLayoutReady(() => {
+      if (this.state.conflicts.length > 0) this.showConflicts();
       const start = window.setTimeout(() => void this.syncNow("background"), 5000);
       this.register(() => window.clearTimeout(start));
     });
@@ -127,7 +136,7 @@ export default class VaultSyncPlugin extends Plugin {
       const conflictsChanged = this.state.conflicts.length !== conflictsBefore;
       const moved = report.uploaded > 0 || report.downloaded > 0 || report.failed.length > 0 || report.cancelled;
       if (!background || moved || conflictsChanged) new Notice(this.settings.lastSyncSummary);
-      if (!background && this.state.conflicts.length > 0) this.showConflicts();
+      if (this.state.conflicts.length > 0 && (!background || conflictsChanged)) this.showConflicts();
     } catch (error) {
       modal?.finish();
       const message = errorMessage(error);
@@ -143,6 +152,29 @@ export default class VaultSyncPlugin extends Plugin {
   showConflicts(): void {
     new ConflictModal(this.app, this).open();
   }
+
+  updateFromGitHub = async (): Promise<void> => {
+    try {
+      const listed = await requestUrl({
+        url: `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`,
+        headers: { Accept: "application/vnd.github+json" },
+      });
+      const plan = parseLatestRelease(listed.json, this.manifest.version);
+      if (!plan) {
+        new Notice(`Vault Anovem Sync ${this.manifest.version} is current.`);
+        return;
+      }
+      const dir = this.manifest.dir;
+      if (!dir) throw new Error("Plugin folder is missing.");
+      for (const name of PLUGIN_FILES) {
+        const downloaded = await requestUrl({ url: plan.files[name] });
+        await this.app.vault.adapter.writeBinary(`${dir}/${name}`, downloaded.arrayBuffer);
+      }
+      new Notice(`Installed ${plan.version}. Reload Obsidian to use it.`);
+    } catch (error) {
+      new Notice(errorMessage(error));
+    }
+  };
 
   backupNow = async (): Promise<void> => {
     if (this.running) {
