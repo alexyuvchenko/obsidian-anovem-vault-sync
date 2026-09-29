@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkVersions } from "./version.mjs";
+import { checkVersions, replaceLockVersion } from "./version.mjs";
 
 const current = {
   manifestVersion: "0.1.0",
@@ -17,6 +17,24 @@ test("versions.json must list the same version", () => {
   const problems = checkVersions({ ...current, versions: {} });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /versions\.json/);
+});
+
+test("the lockfile version updates from whatever it currently says", () => {
+  const lock = `{
+  "name": "vault-anovem-sync",
+  "version": "0.1.0",
+  "packages": {
+    "": {
+      "name": "vault-anovem-sync",
+      "version": "0.1.0",
+      "license": "MIT"
+    }
+  }
+}
+`;
+  const updated = replaceLockVersion(lock, "0.3.0");
+  assert.match(updated, /"version": "0.3.0"/);
+  assert.doesNotMatch(updated, /"version": "0.1.0"/);
 });
 
 test("a different tag is rejected", () => {

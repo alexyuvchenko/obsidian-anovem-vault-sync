@@ -43,7 +43,6 @@ function writeVersion(next) {
   const manifest = JSON.parse(readFileSync(manifestUrl, "utf8"));
   const pkg = JSON.parse(readFileSync(packageUrl, "utf8"));
   const versions = JSON.parse(readFileSync(versionsUrl, "utf8"));
-  const previous = manifest.version;
   manifest.version = next;
   pkg.version = next;
   versions[next] = manifest.minAppVersion;
@@ -51,11 +50,23 @@ function writeVersion(next) {
   writeFileSync(packageUrl, `${JSON.stringify(pkg, null, 2)}\n`);
   writeFileSync(versionsUrl, `${JSON.stringify(versions, null, 2)}\n`);
   const lock = readFileSync(lockUrl, "utf8");
+  writeFileSync(lockUrl, replaceLockVersion(lock, next));
+}
+
+export function replaceLockVersion(lock, next) {
+  const parsed = JSON.parse(lock);
+  const rootVersion = parsed.version;
+  const packageVersion = parsed.packages?.[""]?.version;
+  if (typeof rootVersion !== "string" || typeof packageVersion !== "string") {
+    throw new Error("package-lock.json has no root version.");
+  }
   const updated = lock
-    .replace(`"name": "vault-anovem-sync",\n  "version": "${previous}"`, `"name": "vault-anovem-sync",\n  "version": "${next}"`)
-    .replace(`"name": "vault-anovem-sync",\n      "version": "${previous}"`, `"name": "vault-anovem-sync",\n      "version": "${next}"`);
-  if (updated === lock && previous !== next) throw new Error("package-lock.json version was not updated.");
-  writeFileSync(lockUrl, updated);
+    .replace(`"name": "vault-anovem-sync",\n  "version": "${rootVersion}"`, `"name": "vault-anovem-sync",\n  "version": "${next}"`)
+    .replace(`"name": "vault-anovem-sync",\n      "version": "${packageVersion}"`, `"name": "vault-anovem-sync",\n      "version": "${next}"`);
+  if (!updated.includes(`"name": "vault-anovem-sync",\n  "version": "${next}"`) || !updated.includes(`"name": "vault-anovem-sync",\n      "version": "${next}"`)) {
+    throw new Error("package-lock.json version was not updated.");
+  }
+  return updated;
 }
 
 const invoked = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

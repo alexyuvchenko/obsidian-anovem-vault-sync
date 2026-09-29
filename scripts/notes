@@ -1,0 +1,2 @@
+source ~/.nvm/nvm.sh && nvm use 22
+node scripts/version.mjs 0.2.0
