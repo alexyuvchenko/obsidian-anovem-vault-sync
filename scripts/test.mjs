@@ -11,7 +11,7 @@ await esbuild.build({
   external: ["node:test", "node:assert", "node:assert/strict"],
 });
 
-const child = spawn(process.execPath, ["--test", "dist-test/plan.test.mjs", "dist-test/paths.test.mjs", "dist-test/archive.test.mjs", "dist-test/app-key.test.mjs", "dist-test/merge.test.mjs", "dist-test/release.test.mjs"], {
+const child = spawn(process.execPath, ["--test", "dist-test/plan.test.mjs", "dist-test/paths.test.mjs", "dist-test/archive.test.mjs", "dist-test/app-key.test.mjs", "dist-test/merge.test.mjs", "dist-test/release.test.mjs", "scripts/version.test.mjs"], {
   stdio: "inherit",
 });
 const code = await new Promise((resolve) => child.on("close", resolve));

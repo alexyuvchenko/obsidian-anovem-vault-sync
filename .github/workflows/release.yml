@@ -17,6 +17,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: node scripts/version.mjs --check "${{ github.ref_name }}"
       - run: npm ci
       - run: npm test
       - run: npm run build

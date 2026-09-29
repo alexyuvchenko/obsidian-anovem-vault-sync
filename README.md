@@ -16,7 +16,13 @@ To install into a vault that does not have the plugin yet:
 ./scripts/install-release.sh "/path/to/vault"
 ```
 
-A release is published when a `v*` tag is pushed. The tag version should match `manifest.json`, and `versions.json` should map that version to the minimum Obsidian version.
+`manifest.json` is the plugin version. `package.json` and `versions.json` must carry the same number. Change it in all three with:
+
+```bash
+node scripts/version.mjs 0.2.0
+```
+
+Commit that, then tag the same commit `v0.2.0`. The release workflow rejects any other tag. `npm run version:check` checks the files without a tag.
 
 Copy a local build into the vault that is open in Obsidian:
 
