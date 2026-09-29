@@ -1,6 +1,6 @@
-import { Component, MarkdownRenderer, Modal, Notice, type App } from "obsidian";
+import { Modal, Notice, type App } from "obsidian";
 import { errorMessage } from "./errors";
-import { decodeUtf8, diffRows, mergeBlocks, textFromChoices, type DiffRow } from "./merge";
+import { decodeUtf8, diffRows, hunkText, mergeLines, textFromApplied, type ApplyChoice, type DiffRow } from "./merge";
 import { conflictText } from "./paths";
 import type VaultSyncPlugin from "./main";
 
@@ -75,12 +75,12 @@ export class ConflictModal extends Modal {
 }
 
 export class ConflictResolveModal extends Modal {
-  private choices = new Map<number, "local" | "remote">();
+  private applied = new Map<number, ApplyChoice>();
   private custom = new Map<number, string>();
   private rows: DiffRow[] = [];
   private binary: ArrayBuffer | null = null;
   private saving = false;
-  private markdown = new Component();
+  private scrollTop = 0;
 
   constructor(
     app: App,
@@ -108,109 +108,135 @@ export class ConflictResolveModal extends Modal {
         this.renderBinary(sides.local, sides.remote);
         return;
       }
-      this.rows = mergeBlocks(diffRows(localText ?? "", remoteText ?? ""));
+      this.rows = diffRows(localText ?? "", remoteText ?? "");
       for (const row of this.rows) {
-        if (row.kind === "change") this.choices.set(row.id, "local");
+        if (row.kind === "change") this.applied.set(row.id, { local: true, remote: false });
       }
-      await this.renderText();
+      this.renderText();
     } catch (error) {
       this.contentEl.empty();
       this.contentEl.createEl("p", { text: errorMessage(error) });
     }
   };
 
-  onClose(): void {
-    this.markdown.unload();
-  }
-
-  private renderText = async (): Promise<void> => {
-    this.markdown.unload();
-    this.markdown = new Component();
-    this.markdown.load();
+  private renderText(): void {
+    const open = this.contentEl.querySelector(".vault-sync-merge-scroll");
+    if (open) this.scrollTop = open.scrollTop;
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("p", {
-      text: "Dropbox is on the left, the merged note is in the center, and this device is on the right. Red is only in Dropbox. Green is only on this device.",
-    });
-    const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
-    const useRemote = buttons.createEl("button", { text: "Use Dropbox" });
-    useRemote.onclick = () => {
-      void this.pickAll("remote");
-    };
-    const useLocal = buttons.createEl("button", { text: "Use this device" });
-    useLocal.onclick = () => {
-      void this.pickAll("local");
-    };
-    const board = contentEl.createDiv({ cls: "vault-sync-merge-board" });
-    board.createDiv({ cls: "vault-sync-merge-head", text: "Dropbox" });
-    board.createDiv({ cls: "vault-sync-merge-head", text: "Result" });
-    board.createDiv({ cls: "vault-sync-merge-head", text: "This device" });
-    for (const row of this.rows) {
-      const changed = row.kind === "change";
-      const choice = this.choices.get(row.id) === "remote" ? "remote" : "local";
-      const resultText = this.custom.get(row.id) ?? (choice === "remote" ? row.remote : row.local);
-      await this.pane(board, row.remote, changed ? "vault-sync-diff-dropbox" : "");
-      const center = board.createDiv({ cls: "vault-sync-merge-cell" });
-      if (changed) {
-        center.addClass(this.custom.has(row.id) ? "vault-sync-diff-edited" : choice === "remote" ? "vault-sync-diff-dropbox" : "vault-sync-diff-local");
-        const actions = center.createDiv({ cls: "vault-sync-merge-actions" });
-        const takeRemote = actions.createEl("button", { text: "Use Dropbox" });
-        takeRemote.onclick = () => {
-          void this.choose(row.id, "remote");
-        };
-        const takeLocal = actions.createEl("button", { text: "Use this device" });
-        takeLocal.onclick = () => {
-          void this.choose(row.id, "local");
-        };
-        const edit = actions.createEl("button", { text: "Edit" });
-        edit.onclick = () => this.editResult(row, center);
+    const scroll = contentEl.createDiv({ cls: "vault-sync-merge-scroll" });
+    const head = scroll.createDiv({ cls: "vault-sync-merge-line is-head" });
+    head.createDiv({ text: "This device" });
+    head.createDiv({ text: "Result" });
+    head.createDiv({ text: "Dropbox" });
+    let leftNo = 0;
+    let rightNo = 0;
+    let resultNo = 0;
+    let seenHunk: number | null = null;
+    let customShown = new Set<number>();
+    for (const line of mergeLines(this.rows)) {
+      if (line.hunk !== null && line.hunk !== seenHunk) {
+        seenHunk = line.hunk;
+        this.hunkBar(scroll, line.hunk);
       }
-      await this.renderMarkdown(center, changed ? resultText : row.local);
-      await this.pane(board, row.local, changed ? "vault-sync-diff-local" : "");
+      const choice = line.hunk === null ? null : this.applied.get(line.hunk) ?? { local: true, remote: false };
+      const custom = line.hunk !== null ? this.custom.get(line.hunk) : undefined;
+      const row = scroll.createDiv({ cls: "vault-sync-merge-line" });
+      if (line.from !== "remote") leftNo += 1;
+      if (line.from !== "local") rightNo += 1;
+      const leftOn = choice?.local === true;
+      const rightOn = choice?.remote === true;
+      this.codeCell(row, line.from === "remote" ? null : line.text, line.from === "remote" ? null : leftNo, line.from === "local", false, line.from === "local" && !leftOn);
+      if (custom !== undefined && line.hunk !== null && !customShown.has(line.hunk)) {
+        customShown.add(line.hunk);
+        const count = custom.length === 0 ? 0 : custom.split("\n").length;
+        resultNo += count;
+        this.codeCell(row, custom, count > 0 ? resultNo - count + 1 : null, true, true);
+      } else if (custom !== undefined) {
+        this.codeCell(row, null, null, false);
+      } else if (line.hunk === null || (line.from === "local" && leftOn) || (line.from === "remote" && rightOn)) {
+        resultNo += 1;
+        this.codeCell(row, line.text, resultNo, line.hunk !== null, true);
+      } else {
+        this.codeCell(row, null, null, false);
+      }
+      this.codeCell(row, line.from === "local" ? null : line.text, line.from === "local" ? null : rightNo, line.from === "remote", false, line.from === "remote" && !rightOn);
     }
-    this.saveButton(contentEl);
-  };
+    const footer = contentEl.createDiv({ cls: "vault-sync-merge-footer" });
+    const accept = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
+    const acceptLeft = accept.createEl("button", { text: "Accept left" });
+    acceptLeft.onclick = () => this.pickAll({ local: true, remote: false });
+    const acceptRight = accept.createEl("button", { text: "Accept right" });
+    acceptRight.onclick = () => this.pickAll({ local: false, remote: true });
+    const apply = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
+    const save = apply.createEl("button", { cls: "mod-cta", text: "Apply" });
+    save.onclick = () => {
+      void this.save();
+    };
+    const abort = apply.createEl("button", { text: "Abort" });
+    abort.onclick = () => this.close();
+    scroll.scrollTop = this.scrollTop;
+  }
 
-  private pane = async (board: HTMLElement, markdown: string, diffClass: string): Promise<void> => {
-    const cell = board.createDiv({ cls: "vault-sync-merge-cell" });
-    if (diffClass) cell.addClass(diffClass);
-    await this.renderMarkdown(cell, markdown);
-  };
+  private hunkBar(parent: HTMLElement, id: number): void {
+    const choice = this.applied.get(id) ?? { local: true, remote: false };
+    const bar = parent.createDiv({ cls: "vault-sync-merge-line is-resolve" });
+    const left = bar.createDiv({ cls: "vault-sync-merge-resolve" });
+    this.applyButton(left, "»", "Apply left change", choice.local, () => this.setApplied(id, "local", true));
+    this.applyButton(left, "×", "Ignore left change", !choice.local, () => this.setApplied(id, "local", false));
+    const actions = bar.createDiv({ cls: "vault-sync-merge-resolve" });
+    const edit = actions.createEl("button", { text: "Edit" });
+    edit.onclick = () => this.editHunk(id, actions);
+    const right = bar.createDiv({ cls: "vault-sync-merge-resolve" });
+    this.applyButton(right, "×", "Ignore right change", !choice.remote, () => this.setApplied(id, "remote", false));
+    this.applyButton(right, "«", "Apply right change", choice.remote, () => this.setApplied(id, "remote", true));
+  }
 
-  private renderMarkdown = async (parent: HTMLElement, markdown: string): Promise<void> => {
-    const host = parent.createDiv({ cls: "vault-sync-md" });
-    if (markdown.length === 0) {
-      host.createEl("p", { cls: "vault-sync-merge-empty", text: "Nothing on this side." });
+  private applyButton(parent: HTMLElement, text: string, title: string, on: boolean, action: () => void): void {
+    const button = parent.createEl("button", { text, title });
+    if (on) button.addClass("is-on");
+    button.onclick = action;
+  }
+
+  private codeCell(parent: HTMLElement, text: string | null, number: number | null, changed: boolean, result = false, ignored = false): void {
+    const cell = parent.createDiv({ cls: "vault-sync-code-cell" });
+    if (text === null) {
+      cell.addClass("is-blank");
       return;
     }
-    await MarkdownRenderer.render(this.app, markdown, host, this.path, this.markdown);
-  };
+    if (changed) cell.addClass(result ? "is-result" : "is-changed");
+    if (ignored) cell.addClass("is-ignored");
+    if (text.includes("\n")) cell.addClass("is-block");
+    cell.createSpan({ cls: "vault-sync-ln", text: number === null ? "" : String(number) });
+    cell.createSpan({ cls: "vault-sync-code", text });
+  }
 
-  private choose = async (id: number, side: "local" | "remote"): Promise<void> => {
-    this.choices.set(id, side);
+  private setApplied(id: number, side: "local" | "remote", on: boolean): void {
+    const choice = this.applied.get(id) ?? { local: true, remote: false };
+    this.applied.set(id, { ...choice, [side]: on });
     this.custom.delete(id);
-    await this.renderText();
-  };
+    this.renderText();
+  }
 
-  private editResult(row: DiffRow, cell: HTMLElement): void {
-    cell.querySelector(".vault-sync-md")?.remove();
-    const choice = this.choices.get(row.id) === "remote" ? row.remote : row.local;
-    const area = cell.createEl("textarea", { cls: "vault-sync-merge-result" });
-    area.value = this.custom.get(row.id) ?? choice;
+  private editHunk(id: number, host: HTMLElement): void {
+    const row = this.rows.find((item) => item.id === id);
+    if (!row || host.querySelector("textarea")) return;
+    const area = host.createEl("textarea", { cls: "vault-sync-merge-result" });
+    area.value = this.custom.get(id) ?? hunkText(row, this.applied.get(id) ?? { local: true, remote: false });
     area.focus();
     area.onblur = () => {
-      this.custom.set(row.id, area.value);
-      void this.renderText();
+      this.custom.set(id, area.value);
+      this.renderText();
     };
   }
 
-  private pickAll = async (side: "local" | "remote"): Promise<void> => {
+  private pickAll(choice: ApplyChoice): void {
     this.custom.clear();
     for (const row of this.rows) {
-      if (row.kind === "change") this.choices.set(row.id, side);
+      if (row.kind === "change") this.applied.set(row.id, { ...choice });
     }
-    await this.renderText();
-  };
+    this.renderText();
+  }
 
   private renderBinary(local: ArrayBuffer | null, remote: ArrayBuffer | null): void {
     const { contentEl } = this;
@@ -245,7 +271,7 @@ export class ConflictResolveModal extends Modal {
     if (this.saving) return;
     this.saving = true;
     try {
-      const encoded = new TextEncoder().encode(textFromChoices(this.rows, this.choices, this.custom));
+      const encoded = new TextEncoder().encode(textFromApplied(this.rows, this.applied, this.custom));
       const bytes = this.binary ?? encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
       const backups = await this.plugin.engine.saveResolution(this.path, bytes, new Date());
       new Notice(backups.length > 0 ? `Resolved ${this.path}. Backups: ${backups.join(", ")}` : `Resolved ${this.path}.`);

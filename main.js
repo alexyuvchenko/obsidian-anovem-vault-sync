@@ -1674,63 +1674,46 @@ function diffRows(local, remote) {
   }
   return rows;
 }
-function mergeBlocks(rows) {
-  const grouped = [];
-  for (const row of rows) {
-    const prev = grouped[grouped.length - 1];
-    if (row.kind === "same" && (prev == null ? void 0 : prev.kind) === "same") {
-      prev.local = `${prev.local}
-${row.local}`;
-      prev.remote = prev.local;
-      continue;
-    }
-    grouped.push({ ...row });
-  }
-  const blocks = [];
-  let index = 0;
-  while (index < grouped.length) {
-    if (!isTableBlock(grouped[index])) {
-      blocks.push(grouped[index]);
-      index += 1;
-      continue;
-    }
-    const run = [];
-    while (index < grouped.length && isTableBlock(grouped[index])) {
-      run.push(grouped[index]);
-      index += 1;
-    }
-    blocks.push(combineBlocks(run));
-  }
-  return blocks;
-}
-function textFromChoices(rows, choices, custom) {
-  var _a2;
+function mergeLines(rows) {
   const lines = [];
   for (const row of rows) {
-    if (row.kind === "change" && (custom == null ? void 0 : custom.has(row.id))) {
+    if (row.kind === "same") {
+      lines.push({ hunk: null, from: "same", text: row.local });
+      continue;
+    }
+    for (const text of splitBlock(row.local)) lines.push({ hunk: row.id, from: "local", text });
+    for (const text of splitBlock(row.remote)) lines.push({ hunk: row.id, from: "remote", text });
+  }
+  return lines;
+}
+function splitBlock(text) {
+  if (text.length === 0) return [];
+  return text.split("\n");
+}
+function textFromApplied(rows, applied, custom) {
+  var _a2, _b2;
+  const lines = [];
+  for (const row of rows) {
+    if (row.kind === "same") {
+      lines.push(row.local);
+      continue;
+    }
+    if (custom == null ? void 0 : custom.has(row.id)) {
       const edited = (_a2 = custom.get(row.id)) != null ? _a2 : "";
       if (edited.length > 0) lines.push(edited);
       continue;
     }
-    const picked = row.kind === "change" && choices.get(row.id) === "remote" ? row.remote : row.local;
-    if (row.kind === "same") lines.push(row.local);
-    else if (picked.length > 0) lines.push(picked);
+    const choice = (_b2 = applied.get(row.id)) != null ? _b2 : { local: true, remote: false };
+    if (choice.local && row.local.length > 0) lines.push(row.local);
+    if (choice.remote && row.remote.length > 0) lines.push(row.remote);
   }
   return lines.join("\n");
 }
-function isTableBlock(row) {
-  return `${row.local}
-${row.remote}`.split("\n").some((line) => /^\s*\|/.test(line));
-}
-function combineBlocks(rows) {
-  var _a2;
-  const changed = rows.find((row) => row.kind === "change");
-  return {
-    kind: changed ? "change" : "same",
-    id: (_a2 = changed == null ? void 0 : changed.id) != null ? _a2 : rows[0].id,
-    local: rows.map((row) => row.local).filter((text) => text.length > 0).join("\n"),
-    remote: rows.map((row) => row.remote).filter((text) => text.length > 0).join("\n")
-  };
+function hunkText(row, choice) {
+  const parts = [];
+  if (choice.local && row.local.length > 0) parts.push(row.local);
+  if (choice.remote && row.remote.length > 0) parts.push(row.remote);
+  return parts.join("\n");
 }
 function lineOps(left, right) {
   const rows = left.length;
@@ -1830,12 +1813,12 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
     this.plugin = plugin;
     this.path = path;
     this.onDone = onDone;
-    this.choices = /* @__PURE__ */ new Map();
+    this.applied = /* @__PURE__ */ new Map();
     this.custom = /* @__PURE__ */ new Map();
     this.rows = [];
     this.binary = null;
     this.saving = false;
-    this.markdown = new import_obsidian3.Component();
+    this.scrollTop = 0;
     this.load = async () => {
       try {
         const sides = await this.plugin.engine.readConflictBytes(this.path);
@@ -1846,95 +1829,22 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
           this.renderBinary(sides.local, sides.remote);
           return;
         }
-        this.rows = mergeBlocks(diffRows(localText != null ? localText : "", remoteText != null ? remoteText : ""));
+        this.rows = diffRows(localText != null ? localText : "", remoteText != null ? remoteText : "");
         for (const row of this.rows) {
-          if (row.kind === "change") this.choices.set(row.id, "local");
+          if (row.kind === "change") this.applied.set(row.id, { local: true, remote: false });
         }
-        await this.renderText();
+        this.renderText();
       } catch (error) {
         this.contentEl.empty();
         this.contentEl.createEl("p", { text: errorMessage(error) });
       }
-    };
-    this.renderText = async () => {
-      var _a2;
-      this.markdown.unload();
-      this.markdown = new import_obsidian3.Component();
-      this.markdown.load();
-      const { contentEl } = this;
-      contentEl.empty();
-      contentEl.createEl("p", {
-        text: "Dropbox is on the left, the merged note is in the center, and this device is on the right. Red is only in Dropbox. Green is only on this device."
-      });
-      const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
-      const useRemote = buttons.createEl("button", { text: "Use Dropbox" });
-      useRemote.onclick = () => {
-        void this.pickAll("remote");
-      };
-      const useLocal = buttons.createEl("button", { text: "Use this device" });
-      useLocal.onclick = () => {
-        void this.pickAll("local");
-      };
-      const board = contentEl.createDiv({ cls: "vault-sync-merge-board" });
-      board.createDiv({ cls: "vault-sync-merge-head", text: "Dropbox" });
-      board.createDiv({ cls: "vault-sync-merge-head", text: "Result" });
-      board.createDiv({ cls: "vault-sync-merge-head", text: "This device" });
-      for (const row of this.rows) {
-        const changed = row.kind === "change";
-        const choice = this.choices.get(row.id) === "remote" ? "remote" : "local";
-        const resultText = (_a2 = this.custom.get(row.id)) != null ? _a2 : choice === "remote" ? row.remote : row.local;
-        await this.pane(board, row.remote, changed ? "vault-sync-diff-dropbox" : "");
-        const center = board.createDiv({ cls: "vault-sync-merge-cell" });
-        if (changed) {
-          center.addClass(this.custom.has(row.id) ? "vault-sync-diff-edited" : choice === "remote" ? "vault-sync-diff-dropbox" : "vault-sync-diff-local");
-          const actions = center.createDiv({ cls: "vault-sync-merge-actions" });
-          const takeRemote = actions.createEl("button", { text: "Use Dropbox" });
-          takeRemote.onclick = () => {
-            void this.choose(row.id, "remote");
-          };
-          const takeLocal = actions.createEl("button", { text: "Use this device" });
-          takeLocal.onclick = () => {
-            void this.choose(row.id, "local");
-          };
-          const edit = actions.createEl("button", { text: "Edit" });
-          edit.onclick = () => this.editResult(row, center);
-        }
-        await this.renderMarkdown(center, changed ? resultText : row.local);
-        await this.pane(board, row.local, changed ? "vault-sync-diff-local" : "");
-      }
-      this.saveButton(contentEl);
-    };
-    this.pane = async (board, markdown, diffClass) => {
-      const cell = board.createDiv({ cls: "vault-sync-merge-cell" });
-      if (diffClass) cell.addClass(diffClass);
-      await this.renderMarkdown(cell, markdown);
-    };
-    this.renderMarkdown = async (parent, markdown) => {
-      const host = parent.createDiv({ cls: "vault-sync-md" });
-      if (markdown.length === 0) {
-        host.createEl("p", { cls: "vault-sync-merge-empty", text: "Nothing on this side." });
-        return;
-      }
-      await import_obsidian3.MarkdownRenderer.render(this.app, markdown, host, this.path, this.markdown);
-    };
-    this.choose = async (id, side) => {
-      this.choices.set(id, side);
-      this.custom.delete(id);
-      await this.renderText();
-    };
-    this.pickAll = async (side) => {
-      this.custom.clear();
-      for (const row of this.rows) {
-        if (row.kind === "change") this.choices.set(row.id, side);
-      }
-      await this.renderText();
     };
     this.save = async () => {
       var _a2;
       if (this.saving) return;
       this.saving = true;
       try {
-        const encoded = new TextEncoder().encode(textFromChoices(this.rows, this.choices, this.custom));
+        const encoded = new TextEncoder().encode(textFromApplied(this.rows, this.applied, this.custom));
         const bytes = (_a2 = this.binary) != null ? _a2 : encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
         const backups = await this.plugin.engine.saveResolution(this.path, bytes, /* @__PURE__ */ new Date());
         new import_obsidian3.Notice(backups.length > 0 ? `Resolved ${this.path}. Backups: ${backups.join(", ")}` : `Resolved ${this.path}.`);
@@ -1952,20 +1862,121 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
     this.contentEl.createEl("p", { text: "Reading this device and Dropbox\u2026" });
     void this.load();
   }
-  onClose() {
-    this.markdown.unload();
+  renderText() {
+    var _a2;
+    const open = this.contentEl.querySelector(".vault-sync-merge-scroll");
+    if (open) this.scrollTop = open.scrollTop;
+    const { contentEl } = this;
+    contentEl.empty();
+    const scroll = contentEl.createDiv({ cls: "vault-sync-merge-scroll" });
+    const head = scroll.createDiv({ cls: "vault-sync-merge-line is-head" });
+    head.createDiv({ text: "This device" });
+    head.createDiv({ text: "Result" });
+    head.createDiv({ text: "Dropbox" });
+    let leftNo = 0;
+    let rightNo = 0;
+    let resultNo = 0;
+    let seenHunk = null;
+    let customShown = /* @__PURE__ */ new Set();
+    for (const line of mergeLines(this.rows)) {
+      if (line.hunk !== null && line.hunk !== seenHunk) {
+        seenHunk = line.hunk;
+        this.hunkBar(scroll, line.hunk);
+      }
+      const choice = line.hunk === null ? null : (_a2 = this.applied.get(line.hunk)) != null ? _a2 : { local: true, remote: false };
+      const custom = line.hunk !== null ? this.custom.get(line.hunk) : void 0;
+      const row = scroll.createDiv({ cls: "vault-sync-merge-line" });
+      if (line.from !== "remote") leftNo += 1;
+      if (line.from !== "local") rightNo += 1;
+      const leftOn = (choice == null ? void 0 : choice.local) === true;
+      const rightOn = (choice == null ? void 0 : choice.remote) === true;
+      this.codeCell(row, line.from === "remote" ? null : line.text, line.from === "remote" ? null : leftNo, line.from === "local", false, line.from === "local" && !leftOn);
+      if (custom !== void 0 && line.hunk !== null && !customShown.has(line.hunk)) {
+        customShown.add(line.hunk);
+        const count = custom.length === 0 ? 0 : custom.split("\n").length;
+        resultNo += count;
+        this.codeCell(row, custom, count > 0 ? resultNo - count + 1 : null, true, true);
+      } else if (custom !== void 0) {
+        this.codeCell(row, null, null, false);
+      } else if (line.hunk === null || line.from === "local" && leftOn || line.from === "remote" && rightOn) {
+        resultNo += 1;
+        this.codeCell(row, line.text, resultNo, line.hunk !== null, true);
+      } else {
+        this.codeCell(row, null, null, false);
+      }
+      this.codeCell(row, line.from === "local" ? null : line.text, line.from === "local" ? null : rightNo, line.from === "remote", false, line.from === "remote" && !rightOn);
+    }
+    const footer = contentEl.createDiv({ cls: "vault-sync-merge-footer" });
+    const accept = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
+    const acceptLeft = accept.createEl("button", { text: "Accept left" });
+    acceptLeft.onclick = () => this.pickAll({ local: true, remote: false });
+    const acceptRight = accept.createEl("button", { text: "Accept right" });
+    acceptRight.onclick = () => this.pickAll({ local: false, remote: true });
+    const apply = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
+    const save = apply.createEl("button", { cls: "mod-cta", text: "Apply" });
+    save.onclick = () => {
+      void this.save();
+    };
+    const abort = apply.createEl("button", { text: "Abort" });
+    abort.onclick = () => this.close();
+    scroll.scrollTop = this.scrollTop;
   }
-  editResult(row, cell) {
+  hunkBar(parent, id) {
+    var _a2;
+    const choice = (_a2 = this.applied.get(id)) != null ? _a2 : { local: true, remote: false };
+    const bar = parent.createDiv({ cls: "vault-sync-merge-line is-resolve" });
+    const left = bar.createDiv({ cls: "vault-sync-merge-resolve" });
+    this.applyButton(left, "\xBB", "Apply left change", choice.local, () => this.setApplied(id, "local", true));
+    this.applyButton(left, "\xD7", "Ignore left change", !choice.local, () => this.setApplied(id, "local", false));
+    const actions = bar.createDiv({ cls: "vault-sync-merge-resolve" });
+    const edit = actions.createEl("button", { text: "Edit" });
+    edit.onclick = () => this.editHunk(id, actions);
+    const right = bar.createDiv({ cls: "vault-sync-merge-resolve" });
+    this.applyButton(right, "\xD7", "Ignore right change", !choice.remote, () => this.setApplied(id, "remote", false));
+    this.applyButton(right, "\xAB", "Apply right change", choice.remote, () => this.setApplied(id, "remote", true));
+  }
+  applyButton(parent, text, title, on, action) {
+    const button = parent.createEl("button", { text, title });
+    if (on) button.addClass("is-on");
+    button.onclick = action;
+  }
+  codeCell(parent, text, number, changed, result = false, ignored = false) {
+    const cell = parent.createDiv({ cls: "vault-sync-code-cell" });
+    if (text === null) {
+      cell.addClass("is-blank");
+      return;
+    }
+    if (changed) cell.addClass(result ? "is-result" : "is-changed");
+    if (ignored) cell.addClass("is-ignored");
+    if (text.includes("\n")) cell.addClass("is-block");
+    cell.createSpan({ cls: "vault-sync-ln", text: number === null ? "" : String(number) });
+    cell.createSpan({ cls: "vault-sync-code", text });
+  }
+  setApplied(id, side, on) {
+    var _a2;
+    const choice = (_a2 = this.applied.get(id)) != null ? _a2 : { local: true, remote: false };
+    this.applied.set(id, { ...choice, [side]: on });
+    this.custom.delete(id);
+    this.renderText();
+  }
+  editHunk(id, host) {
     var _a2, _b2;
-    (_a2 = cell.querySelector(".vault-sync-md")) == null ? void 0 : _a2.remove();
-    const choice = this.choices.get(row.id) === "remote" ? row.remote : row.local;
-    const area = cell.createEl("textarea", { cls: "vault-sync-merge-result" });
-    area.value = (_b2 = this.custom.get(row.id)) != null ? _b2 : choice;
+    const row = this.rows.find((item) => item.id === id);
+    if (!row || host.querySelector("textarea")) return;
+    const area = host.createEl("textarea", { cls: "vault-sync-merge-result" });
+    area.value = (_b2 = this.custom.get(id)) != null ? _b2 : hunkText(row, (_a2 = this.applied.get(id)) != null ? _a2 : { local: true, remote: false });
     area.focus();
     area.onblur = () => {
-      this.custom.set(row.id, area.value);
-      void this.renderText();
+      this.custom.set(id, area.value);
+      this.renderText();
     };
+  }
+  pickAll(choice) {
+    this.custom.clear();
+    for (const row of this.rows) {
+      if (row.kind === "change") this.applied.set(row.id, { ...choice });
+    }
+    this.renderText();
   }
   renderBinary(local, remote) {
     const { contentEl } = this;

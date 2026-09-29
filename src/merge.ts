@@ -76,23 +76,73 @@ export function mergeBlocks(rows: DiffRow[]): DiffRow[] {
   return blocks;
 }
 
+export interface MergeLine {
+  hunk: number | null;
+  from: "same" | "local" | "remote";
+  text: string;
+}
+
+export function mergeLines(rows: DiffRow[]): MergeLine[] {
+  const lines: MergeLine[] = [];
+  for (const row of rows) {
+    if (row.kind === "same") {
+      lines.push({ hunk: null, from: "same", text: row.local });
+      continue;
+    }
+    for (const text of splitBlock(row.local)) lines.push({ hunk: row.id, from: "local", text });
+    for (const text of splitBlock(row.remote)) lines.push({ hunk: row.id, from: "remote", text });
+  }
+  return lines;
+}
+
+function splitBlock(text: string): string[] {
+  if (text.length === 0) return [];
+  return text.split("\n");
+}
+
+export interface ApplyChoice {
+  local: boolean;
+  remote: boolean;
+}
+
 export function textFromChoices(
   rows: DiffRow[],
   choices: ReadonlyMap<number, "local" | "remote">,
   custom?: ReadonlyMap<number, string>,
 ): string {
+  const applied = new Map<number, ApplyChoice>();
+  for (const [id, side] of choices) applied.set(id, { local: side !== "remote", remote: side === "remote" });
+  return textFromApplied(rows, applied, custom);
+}
+
+export function textFromApplied(
+  rows: DiffRow[],
+  applied: ReadonlyMap<number, ApplyChoice>,
+  custom?: ReadonlyMap<number, string>,
+): string {
   const lines: string[] = [];
   for (const row of rows) {
-    if (row.kind === "change" && custom?.has(row.id)) {
+    if (row.kind === "same") {
+      lines.push(row.local);
+      continue;
+    }
+    if (custom?.has(row.id)) {
       const edited = custom.get(row.id) ?? "";
       if (edited.length > 0) lines.push(edited);
       continue;
     }
-    const picked = row.kind === "change" && choices.get(row.id) === "remote" ? row.remote : row.local;
-    if (row.kind === "same") lines.push(row.local);
-    else if (picked.length > 0) lines.push(picked);
+    const choice = applied.get(row.id) ?? { local: true, remote: false };
+    if (choice.local && row.local.length > 0) lines.push(row.local);
+    if (choice.remote && row.remote.length > 0) lines.push(row.remote);
   }
   return lines.join("\n");
+}
+
+export function hunkText(row: DiffRow, choice: ApplyChoice): string {
+  const parts: string[] = [];
+  if (choice.local && row.local.length > 0) parts.push(row.local);
+  if (choice.remote && row.remote.length > 0) parts.push(row.remote);
+  return parts.join("\n");
 }
 
 function isTableBlock(row: DiffRow): boolean {

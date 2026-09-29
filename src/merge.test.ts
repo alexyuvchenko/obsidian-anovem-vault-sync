@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diffRows, mergeBlocks, textFromChoices } from "./merge";
+import { diffRows, mergeBlocks, mergeLines, textFromApplied, textFromChoices } from "./merge";
 import { conflictBackupPath } from "./paths";
 
 test("backup names keep the folder and mark which side", () => {
@@ -23,6 +23,26 @@ test("unchanged lines stay and a changed block can take either side", () => {
   const remote = new Map<number, "local" | "remote">([[change.id, "remote"]]);
   assert.equal(textFromChoices(rows, local), "title\nalpha\nend");
   assert.equal(textFromChoices(rows, remote), "title\nbeta\nend");
+});
+
+test("a change can apply the left side, the right side, or both", () => {
+  const rows = diffRows("title\nalpha\nend", "title\nbeta\nend");
+  const change = rows.find((row) => row.kind === "change");
+  assert.ok(change);
+  const both = new Map([[change.id, { local: true, remote: true }]]);
+  const neither = new Map([[change.id, { local: false, remote: false }]]);
+  assert.equal(textFromApplied(rows, both), "title\nalpha\nbeta\nend");
+  assert.equal(textFromApplied(rows, neither), "title\nend");
+});
+
+test("changed lines stay aligned across the three panes", () => {
+  const lines = mergeLines(diffRows("title\nalpha\nend", "title\nbeta\nend"));
+  assert.deepEqual(lines.map((line) => [line.from, line.text]), [
+    ["same", "title"],
+    ["local", "alpha"],
+    ["remote", "beta"],
+    ["same", "end"],
+  ]);
 });
 
 test("a changed table stays one markdown block", () => {
