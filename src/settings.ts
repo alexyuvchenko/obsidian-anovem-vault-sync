@@ -215,6 +215,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Keep last backups")
+      .setDesc("After a backup, older archives in that folder are removed. From 1 to 100.")
+      .addText((text) => {
+        text.setPlaceholder("5").setValue(String(this.plugin.settings.backupKeepLast));
+        text.onChange(async (value) => {
+          const keep = Number(value);
+          if (!Number.isInteger(keep) || keep < 1 || keep > 100) return;
+          this.plugin.settings.backupKeepLast = keep;
+          await this.plugin.persist();
+        });
+      });
+
+    new Setting(containerEl)
       .setName("Backup")
       .addButton((button) => {
         button.setButtonText("Backup vault").setCta();

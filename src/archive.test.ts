@@ -6,6 +6,8 @@ import {
   formatTimestamp,
   isInBackupFolder,
   normalizeBackupFolder,
+  normalizeBackupKeepLast,
+  oldBackupFiles,
   roundTripGzip,
   roundTripZip,
   sanitizeVaultName,
@@ -26,6 +28,24 @@ test("backup folder stays inside the vault", () => {
   assert.equal(isInBackupFolder("backups/old.zip", "backups"), true);
   assert.equal(isInBackupFolder("Backups/old.zip", "backups"), true);
   assert.equal(isInBackupFolder("notes/backups.md", "backups"), false);
+});
+
+test("old backups beyond the keep count are removed", () => {
+  assert.equal(normalizeBackupKeepLast(0), 5);
+  assert.equal(normalizeBackupKeepLast(3), 3);
+  assert.equal(normalizeBackupKeepLast(200), 100);
+  assert.deepEqual(
+    oldBackupFiles(
+      [
+        "backups/notes.md",
+        "backups/20260927-100000_My Vault.zip",
+        "backups/20260929-150000_My Vault.zip",
+        "backups/20260928-120000_My Vault.gzip",
+      ],
+      2,
+    ),
+    ["backups/20260927-100000_My Vault.zip"],
+  );
 });
 
 test("zip archive keeps vault files", () => {

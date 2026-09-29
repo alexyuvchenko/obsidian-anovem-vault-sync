@@ -25,8 +25,31 @@ export function sanitizeVaultName(name: string): string {
   return cleaned || "vault";
 }
 
+const BACKUP_FILE = /^\d{8}-\d{6}_.+\.(zip|gzip)$/i;
+
 export function backupFileName(date: Date, vaultName: string, format: BackupFormat): string {
   return `${formatTimestamp(date)}_${sanitizeVaultName(vaultName)}.${format}`;
+}
+
+export function normalizeBackupKeepLast(value: number): number {
+  if (!Number.isInteger(value) || value < 1) return 5;
+  return Math.min(value, 100);
+}
+
+export function isBackupArchiveName(path: string): boolean {
+  return BACKUP_FILE.test(fileName(path));
+}
+
+export function oldBackupFiles(paths: string[], keep: number): string[] {
+  const keepLast = Math.max(0, Math.floor(keep));
+  const backups = paths.filter((path) => isBackupArchiveName(path));
+  backups.sort((left, right) => fileName(right).localeCompare(fileName(left)));
+  return backups.slice(keepLast);
+}
+
+function fileName(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] ?? path;
 }
 
 export function normalizeBackupFolder(input: string): string {

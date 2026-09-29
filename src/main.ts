@@ -1,5 +1,5 @@
 import { addIcon, MarkdownView, Notice, Platform, Plugin, requestUrl } from "obsidian";
-import { normalizeBackupFolder, type BackupFormat } from "./archive";
+import { normalizeBackupFolder, normalizeBackupKeepLast, type BackupFormat } from "./archive";
 import { BackupCancelled, createBackup } from "./backup";
 import { DropboxClient } from "./dropbox";
 import { errorMessage } from "./errors";
@@ -279,12 +279,15 @@ export default class VaultSyncPlugin extends Plugin {
     try {
       const format: BackupFormat = this.settings.backupFormat === "gzip" ? "gzip" : "zip";
       const folder = normalizeBackupFolder(this.settings.backupFolder);
+      const keepLast = normalizeBackupKeepLast(this.settings.backupKeepLast);
       this.settings.backupFolder = folder;
+      this.settings.backupKeepLast = keepLast;
       const path = await createBackup({
         vault: this.app.vault,
         vaultName: this.app.vault.getName(),
         format,
         folder,
+        keepLast,
         now: new Date(),
         cancelled: () => modal.cancelled,
         update: (text) => {

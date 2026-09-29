@@ -94,7 +94,7 @@ The file name is `{timestamp}_{vault name}.zip` or `{timestamp}_{vault name}.gzi
 20260929-152630_My Vault.gzip
 ```
 
-The timestamp is the local date and time, `YYYYMMDD-HHmmss`. Choose **zip** or **gzip** in the plugin settings. A `.gzip` file is a gzip-compressed tar of the vault.
+The timestamp is the local date and time, `YYYYMMDD-HHmmss`. Choose **zip** or **gzip** in the plugin settings. A `.gzip` file is a gzip-compressed tar of the vault. After each backup, only the last N archives in that folder are kept. N is a setting; the default is 5.
 
 On the Mac the file stays with the Google Drive vault. On the iPhone it stays with the iCloud vault.
 

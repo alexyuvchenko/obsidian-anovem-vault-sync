@@ -4,6 +4,8 @@ import {
   gzipEntries,
   isInBackupFolder,
   normalizeBackupFolder,
+  normalizeBackupKeepLast,
+  oldBackupFiles,
   zipEntries,
   type ArchiveFile,
   type ArchiveFolder,
@@ -22,11 +24,13 @@ export async function createBackup(options: {
   vaultName: string;
   format: BackupFormat;
   folder: string;
+  keepLast: number;
   now: Date;
   cancelled: () => boolean;
   update: (text: string) => void;
 }): Promise<string> {
   const folder = normalizeBackupFolder(options.folder);
+  const keepLast = normalizeBackupKeepLast(options.keepLast);
   const items = await listVault(options.vault, folder);
   const files: ArchiveFile[] = [];
   const folders: ArchiveFolder[] = [];
@@ -54,6 +58,13 @@ export async function createBackup(options: {
   const target = normalizePath(`${folder}/${backupFileName(options.now, options.vaultName, options.format)}`);
   await ensureFolder(options.vault, folder);
   await options.vault.adapter.writeBinary(target, copyBuffer(bytes));
+  if (options.cancelled()) throw new BackupCancelled();
+  options.update("Removing old backups…");
+  const listed = await listPath(options.vault, folder);
+  for (const path of oldBackupFiles(listed.files, keepLast)) {
+    if (options.cancelled()) throw new BackupCancelled();
+    await options.vault.adapter.remove(path);
+  }
   return target;
 }
 

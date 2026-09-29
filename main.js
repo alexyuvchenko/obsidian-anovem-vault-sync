@@ -945,8 +945,27 @@ function sanitizeVaultName(name) {
   const cleaned = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
   return cleaned || "vault";
 }
+var BACKUP_FILE = /^\d{8}-\d{6}_.+\.(zip|gzip)$/i;
 function backupFileName(date, vaultName, format) {
   return `${formatTimestamp(date)}_${sanitizeVaultName(vaultName)}.${format}`;
+}
+function normalizeBackupKeepLast(value) {
+  if (!Number.isInteger(value) || value < 1) return 5;
+  return Math.min(value, 100);
+}
+function isBackupArchiveName(path) {
+  return BACKUP_FILE.test(fileName(path));
+}
+function oldBackupFiles(paths, keep) {
+  const keepLast = Math.max(0, Math.floor(keep));
+  const backups = paths.filter((path) => isBackupArchiveName(path));
+  backups.sort((left, right) => fileName(right).localeCompare(fileName(left)));
+  return backups.slice(keepLast);
+}
+function fileName(path) {
+  var _a2;
+  const parts = path.replace(/\\/g, "/").split("/");
+  return (_a2 = parts[parts.length - 1]) != null ? _a2 : path;
 }
 function normalizeBackupFolder(input) {
   const folder = input.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -1105,6 +1124,7 @@ var BackupCancelled = class extends Error {
 async function createBackup(options) {
   var _a2;
   const folder = normalizeBackupFolder(options.folder);
+  const keepLast = normalizeBackupKeepLast(options.keepLast);
   const items = await listVault(options.vault, folder);
   const files = [];
   const folders = [];
@@ -1132,6 +1152,13 @@ async function createBackup(options) {
   const target = (0, import_obsidian.normalizePath)(`${folder}/${backupFileName(options.now, options.vaultName, options.format)}`);
   await ensureFolder(options.vault, folder);
   await options.vault.adapter.writeBinary(target, copyBuffer(bytes));
+  if (options.cancelled()) throw new BackupCancelled();
+  options.update("Removing old backups\u2026");
+  const listed = await listPath(options.vault, folder);
+  for (const path of oldBackupFiles(listed.files, keepLast)) {
+    if (options.cancelled()) throw new BackupCancelled();
+    await options.vault.adapter.remove(path);
+  }
   return target;
 }
 async function listVault(vault, backupFolder) {
@@ -2635,6 +2662,15 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.persist();
       });
     });
+    new import_obsidian4.Setting(containerEl).setName("Keep last backups").setDesc("After a backup, older archives in that folder are removed. From 1 to 100.").addText((text) => {
+      text.setPlaceholder("5").setValue(String(this.plugin.settings.backupKeepLast));
+      text.onChange(async (value) => {
+        const keep = Number(value);
+        if (!Number.isInteger(keep) || keep < 1 || keep > 100) return;
+        this.plugin.settings.backupKeepLast = keep;
+        await this.plugin.persist();
+      });
+    });
     new import_obsidian4.Setting(containerEl).setName("Backup").addButton((button) => {
       button.setButtonText("Backup vault").setCta();
       button.onClick(() => {
@@ -3285,9 +3321,10 @@ var DEFAULT_SETTINGS = {
   lastSyncAt: 0,
   lastSyncSummary: "",
   backgroundSync: true,
-  syncIntervalMinutes: 5,
+  syncIntervalMinutes: 30,
   backupFormat: "zip",
   backupFolder: "backups",
+  backupKeepLast: 3,
   conflictMode: "review"
 };
 function emptyState() {
@@ -3449,12 +3486,15 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
       try {
         const format = this.settings.backupFormat === "gzip" ? "gzip" : "zip";
         const folder = normalizeBackupFolder(this.settings.backupFolder);
+        const keepLast = normalizeBackupKeepLast(this.settings.backupKeepLast);
         this.settings.backupFolder = folder;
+        this.settings.backupKeepLast = keepLast;
         const path = await createBackup({
           vault: this.app.vault,
           vaultName: this.app.vault.getName(),
           format,
           folder,
+          keepLast,
           now: /* @__PURE__ */ new Date(),
           cancelled: () => modal.cancelled,
           update: (text) => {

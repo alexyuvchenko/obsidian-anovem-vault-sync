@@ -13,6 +13,7 @@ export interface Settings {
   syncIntervalMinutes: number;
   backupFormat: "zip" | "gzip";
   backupFolder: string;
+  backupKeepLast: number;
   conflictMode: ConflictMode;
 }
 
@@ -59,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   syncIntervalMinutes: 5,
   backupFormat: "zip",
   backupFolder: "backups",
+  backupKeepLast: 5,
   conflictMode: "review",
 };
 

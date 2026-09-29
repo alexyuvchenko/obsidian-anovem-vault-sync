@@ -58,7 +58,7 @@ Background sync defaults to every 5 minutes while Obsidian is open, and again wh
 
 **Backup vault** writes the whole vault, including `.obsidian`, into the backup folder inside the vault. The default folder is `backups`. That folder is not packed into the archive.
 
-File name: `{YYYYMMDD-HHmmss}_{vault name}.zip` or `.gzip`. A `.gzip` file is a gzip-compressed tar. Format is a setting.
+File name: `{YYYYMMDD-HHmmss}_{vault name}.zip` or `.gzip`. A `.gzip` file is a gzip-compressed tar. Format is a setting. After a backup, only the last `backupKeepLast` archives stay in the folder (default 5, from 1 to 100).
 
 ## Secrets
 
