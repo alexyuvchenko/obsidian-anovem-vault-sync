@@ -24,21 +24,7 @@ node scripts/version.mjs 0.2.0
 
 Commit that, then tag the same commit `v0.2.0`. The release workflow rejects any other tag. `npm run version:check` checks the files without a tag.
 
-Copy a local build into the vault that is open in Obsidian:
-
-```bash
-./scripts/copy-plugin.sh
-```
-
-That copies `manifest.json`, `main.js`, and `styles.css` into `.obsidian/plugins/vault-anovem-sync/` for the iCloud `nexus` vault and the Google Drive `nexus` vault. To copy into another vault, pass its folder:
-
-```bash
-./scripts/copy-plugin.sh "/path/to/vault"
-```
-
-Quit Obsidian and open it again. Turn off Restricted mode and enable **Vault Anovem Sync**.
-
-If `main.js` is missing, build it first. See [Build](#build).
+Reload Obsidian. Turn off Restricted mode and enable **Vault Anovem Sync**.
 
 ## Connect Dropbox
 

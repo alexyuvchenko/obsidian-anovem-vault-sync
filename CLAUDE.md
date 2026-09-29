@@ -12,13 +12,13 @@ Node.js 22 or newer is required. The default `node` on this machine may be older
 npm install
 npm test
 ./scripts/build.sh
-./scripts/copy-plugin.sh
+./scripts/install-release.sh "/path/to/vault"
 ```
 
 - `npm test` bundles `src/*.test.ts` with esbuild and runs them under `node --test`. Output goes to `dist-test/`.
 - `./scripts/build.sh` runs `npm run build`: `tsc -noEmit` then a production esbuild bundle to `main.js`.
 - `npm run dev` watches and writes `main.js` with an inline sourcemap.
-- `./scripts/copy-plugin.sh` copies `manifest.json`, `main.js`, and `styles.css` into `.obsidian/plugins/vault-anovem-sync/` for the iCloud `nexus` vault and the Google Drive `nexus` vault. Pass a vault path to copy elsewhere.
+- `./scripts/install-release.sh` downloads `manifest.json`, `main.js`, and `styles.css` from the latest GitHub release into `.obsidian/plugins/vault-anovem-sync/` in the vault you pass.
 
 Plugin files Obsidian loads live at the repo root: `manifest.json`, `main.js`, `styles.css`. `main.js` is generated.
 
