@@ -47,14 +47,66 @@ export function diffRows(local: string, remote: string): DiffRow[] {
   return rows;
 }
 
-export function textFromChoices(rows: DiffRow[], choices: ReadonlyMap<number, "local" | "remote">): string {
+export function mergeBlocks(rows: DiffRow[]): DiffRow[] {
+  const grouped: DiffRow[] = [];
+  for (const row of rows) {
+    const prev = grouped[grouped.length - 1];
+    if (row.kind === "same" && prev?.kind === "same") {
+      prev.local = `${prev.local}\n${row.local}`;
+      prev.remote = prev.local;
+      continue;
+    }
+    grouped.push({ ...row });
+  }
+  const blocks: DiffRow[] = [];
+  let index = 0;
+  while (index < grouped.length) {
+    if (!isTableBlock(grouped[index])) {
+      blocks.push(grouped[index]);
+      index += 1;
+      continue;
+    }
+    const run: DiffRow[] = [];
+    while (index < grouped.length && isTableBlock(grouped[index])) {
+      run.push(grouped[index]);
+      index += 1;
+    }
+    blocks.push(combineBlocks(run));
+  }
+  return blocks;
+}
+
+export function textFromChoices(
+  rows: DiffRow[],
+  choices: ReadonlyMap<number, "local" | "remote">,
+  custom?: ReadonlyMap<number, string>,
+): string {
   const lines: string[] = [];
   for (const row of rows) {
+    if (row.kind === "change" && custom?.has(row.id)) {
+      const edited = custom.get(row.id) ?? "";
+      if (edited.length > 0) lines.push(edited);
+      continue;
+    }
     const picked = row.kind === "change" && choices.get(row.id) === "remote" ? row.remote : row.local;
     if (row.kind === "same") lines.push(row.local);
     else if (picked.length > 0) lines.push(picked);
   }
   return lines.join("\n");
+}
+
+function isTableBlock(row: DiffRow): boolean {
+  return `${row.local}\n${row.remote}`.split("\n").some((line) => /^\s*\|/.test(line));
+}
+
+function combineBlocks(rows: DiffRow[]): DiffRow {
+  const changed = rows.find((row) => row.kind === "change");
+  return {
+    kind: changed ? "change" : "same",
+    id: changed?.id ?? rows[0].id,
+    local: rows.map((row) => row.local).filter((text) => text.length > 0).join("\n"),
+    remote: rows.map((row) => row.remote).filter((text) => text.length > 0).join("\n"),
+  };
 }
 
 type LineOp = { tag: "same" | "local" | "remote"; line: string };

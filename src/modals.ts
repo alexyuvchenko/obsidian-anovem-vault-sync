@@ -1,6 +1,6 @@
-import { Modal, Notice, type App } from "obsidian";
+import { Component, MarkdownRenderer, Modal, Notice, type App } from "obsidian";
 import { errorMessage } from "./errors";
-import { decodeUtf8, diffRows, textFromChoices, type DiffRow } from "./merge";
+import { decodeUtf8, diffRows, mergeBlocks, textFromChoices, type DiffRow } from "./merge";
 import { conflictText } from "./paths";
 import type VaultSyncPlugin from "./main";
 
@@ -76,11 +76,11 @@ export class ConflictModal extends Modal {
 
 export class ConflictResolveModal extends Modal {
   private choices = new Map<number, "local" | "remote">();
+  private custom = new Map<number, string>();
   private rows: DiffRow[] = [];
-  private result: HTMLTextAreaElement | null = null;
-  private manual = false;
   private binary: ArrayBuffer | null = null;
   private saving = false;
+  private markdown = new Component();
 
   constructor(
     app: App,
@@ -108,83 +108,109 @@ export class ConflictResolveModal extends Modal {
         this.renderBinary(sides.local, sides.remote);
         return;
       }
-      this.rows = diffRows(localText ?? "", remoteText ?? "");
+      this.rows = mergeBlocks(diffRows(localText ?? "", remoteText ?? ""));
       for (const row of this.rows) {
         if (row.kind === "change") this.choices.set(row.id, "local");
       }
-      this.renderText();
+      await this.renderText();
     } catch (error) {
       this.contentEl.empty();
       this.contentEl.createEl("p", { text: errorMessage(error) });
     }
   };
 
-  private renderText(): void {
+  onClose(): void {
+    this.markdown.unload();
+  }
+
+  private renderText = async (): Promise<void> => {
+    this.markdown.unload();
+    this.markdown = new Component();
+    this.markdown.load();
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("p", {
-      text: "Left is this device. Right is Dropbox. Pick a side for each change, or edit the result. Save replaces both copies.",
+      text: "Dropbox is on the left, the merged note is in the center, and this device is on the right. Red is only in Dropbox. Green is only on this device.",
     });
-    const columns = contentEl.createDiv({ cls: "vault-sync-merge-columns" });
-    columns.createEl("div", { cls: "vault-sync-merge-heading", text: "This device" });
-    columns.createEl("div", { cls: "vault-sync-merge-heading", text: "Dropbox" });
-    for (const row of this.rows) {
-      if (row.kind === "same") {
-        const same = columns.createDiv({ cls: "vault-sync-merge-same" });
-        same.createEl("pre", { text: row.local });
-        continue;
-      }
-      this.hunk(columns, row, "local");
-      this.hunk(columns, row, "remote");
-    }
     const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
-    const useLocal = buttons.createEl("button", { text: "Use this device" });
-    useLocal.onclick = () => this.pickAll("local");
     const useRemote = buttons.createEl("button", { text: "Use Dropbox" });
-    useRemote.onclick = () => this.pickAll("remote");
-    contentEl.createEl("div", { cls: "vault-sync-merge-heading", text: "Result" });
-    this.result = contentEl.createEl("textarea", { cls: "vault-sync-merge-result" });
-    this.markChoices();
-    this.result.value = textFromChoices(this.rows, this.choices);
-    this.result.addEventListener("input", () => {
-      this.manual = true;
-    });
+    useRemote.onclick = () => {
+      void this.pickAll("remote");
+    };
+    const useLocal = buttons.createEl("button", { text: "Use this device" });
+    useLocal.onclick = () => {
+      void this.pickAll("local");
+    };
+    const board = contentEl.createDiv({ cls: "vault-sync-merge-board" });
+    board.createDiv({ cls: "vault-sync-merge-head", text: "Dropbox" });
+    board.createDiv({ cls: "vault-sync-merge-head", text: "Result" });
+    board.createDiv({ cls: "vault-sync-merge-head", text: "This device" });
+    for (const row of this.rows) {
+      const changed = row.kind === "change";
+      const choice = this.choices.get(row.id) === "remote" ? "remote" : "local";
+      const resultText = this.custom.get(row.id) ?? (choice === "remote" ? row.remote : row.local);
+      await this.pane(board, row.remote, changed ? "vault-sync-diff-dropbox" : "");
+      const center = board.createDiv({ cls: "vault-sync-merge-cell" });
+      if (changed) {
+        center.addClass(this.custom.has(row.id) ? "vault-sync-diff-edited" : choice === "remote" ? "vault-sync-diff-dropbox" : "vault-sync-diff-local");
+        const actions = center.createDiv({ cls: "vault-sync-merge-actions" });
+        const takeRemote = actions.createEl("button", { text: "Use Dropbox" });
+        takeRemote.onclick = () => {
+          void this.choose(row.id, "remote");
+        };
+        const takeLocal = actions.createEl("button", { text: "Use this device" });
+        takeLocal.onclick = () => {
+          void this.choose(row.id, "local");
+        };
+        const edit = actions.createEl("button", { text: "Edit" });
+        edit.onclick = () => this.editResult(row, center);
+      }
+      await this.renderMarkdown(center, changed ? resultText : row.local);
+      await this.pane(board, row.local, changed ? "vault-sync-diff-local" : "");
+    }
     this.saveButton(contentEl);
-  }
+  };
 
-  private hunk(parent: HTMLElement, row: DiffRow, side: "local" | "remote"): void {
-    const block = parent.createDiv({ cls: "vault-sync-merge-hunk" });
-    block.createEl("pre", { text: side === "local" ? row.local : row.remote });
-    const button = block.createEl("button", { text: side === "local" ? "Accept left" : "Accept right" });
-    button.onclick = () => {
-      this.choices.set(row.id, side);
-      this.markChoices();
-      if (!this.manual && this.result) this.result.value = textFromChoices(this.rows, this.choices);
+  private pane = async (board: HTMLElement, markdown: string, diffClass: string): Promise<void> => {
+    const cell = board.createDiv({ cls: "vault-sync-merge-cell" });
+    if (diffClass) cell.addClass(diffClass);
+    await this.renderMarkdown(cell, markdown);
+  };
+
+  private renderMarkdown = async (parent: HTMLElement, markdown: string): Promise<void> => {
+    const host = parent.createDiv({ cls: "vault-sync-md" });
+    if (markdown.length === 0) {
+      host.createEl("p", { cls: "vault-sync-merge-empty", text: "Nothing on this side." });
+      return;
+    }
+    await MarkdownRenderer.render(this.app, markdown, host, this.path, this.markdown);
+  };
+
+  private choose = async (id: number, side: "local" | "remote"): Promise<void> => {
+    this.choices.set(id, side);
+    this.custom.delete(id);
+    await this.renderText();
+  };
+
+  private editResult(row: DiffRow, cell: HTMLElement): void {
+    cell.querySelector(".vault-sync-md")?.remove();
+    const choice = this.choices.get(row.id) === "remote" ? row.remote : row.local;
+    const area = cell.createEl("textarea", { cls: "vault-sync-merge-result" });
+    area.value = this.custom.get(row.id) ?? choice;
+    area.focus();
+    area.onblur = () => {
+      this.custom.set(row.id, area.value);
+      void this.renderText();
     };
   }
 
-  private markChoices(): void {
-    const blocks = this.contentEl.querySelectorAll(".vault-sync-merge-hunk");
-    let index = 0;
-    for (const row of this.rows) {
-      if (row.kind !== "change") continue;
-      const choice = this.choices.get(row.id);
-      const left = blocks[index] as HTMLElement | undefined;
-      const right = blocks[index + 1] as HTMLElement | undefined;
-      left?.toggleClass("is-chosen", choice === "local");
-      right?.toggleClass("is-chosen", choice === "remote");
-      index += 2;
-    }
-  }
-
-  private pickAll(side: "local" | "remote"): void {
+  private pickAll = async (side: "local" | "remote"): Promise<void> => {
+    this.custom.clear();
     for (const row of this.rows) {
       if (row.kind === "change") this.choices.set(row.id, side);
     }
-    this.manual = false;
-    this.markChoices();
-    if (this.result) this.result.value = textFromChoices(this.rows, this.choices);
-  }
+    await this.renderText();
+  };
 
   private renderBinary(local: ArrayBuffer | null, remote: ArrayBuffer | null): void {
     const { contentEl } = this;
@@ -219,7 +245,7 @@ export class ConflictResolveModal extends Modal {
     if (this.saving) return;
     this.saving = true;
     try {
-      const encoded = new TextEncoder().encode(this.result?.value ?? "");
+      const encoded = new TextEncoder().encode(textFromChoices(this.rows, this.choices, this.custom));
       const bytes = this.binary ?? encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
       const backups = await this.plugin.engine.saveResolution(this.path, bytes, new Date());
       new Notice(backups.length > 0 ? `Resolved ${this.path}. Backups: ${backups.join(", ")}` : `Resolved ${this.path}.`);

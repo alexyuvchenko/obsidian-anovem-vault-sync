@@ -58,7 +58,7 @@ Background sync is on by default. While Obsidian is open, the vault syncs every 
 
 The conflict list opens when Obsidian starts if any conflicts are already recorded, and again after a sync that still has conflicts. The plugin does not pick a side on its own.
 
-**Open** shows this device on the left and Dropbox on the right. Accept a side for each changed block, or edit the result. **Save resolved copy** writes that result over the file on this device and in Dropbox.
+**Open** shows three panes: Dropbox, the result, and this device. The note is rendered as Markdown. Parts that differ are colored red on the Dropbox side and green on this device. **Save resolved copy** writes that result over the file on this device and in Dropbox.
 
 Before replacing the file, each existing copy is saved beside it and uploaded:
 

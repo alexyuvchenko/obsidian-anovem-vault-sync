@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diffRows, textFromChoices } from "./merge";
+import { diffRows, mergeBlocks, textFromChoices } from "./merge";
 import { conflictBackupPath } from "./paths";
 
 test("backup names keep the folder and mark which side", () => {
@@ -23,4 +23,14 @@ test("unchanged lines stay and a changed block can take either side", () => {
   const remote = new Map<number, "local" | "remote">([[change.id, "remote"]]);
   assert.equal(textFromChoices(rows, local), "title\nalpha\nend");
   assert.equal(textFromChoices(rows, remote), "title\nbeta\nend");
+});
+
+test("a changed table stays one markdown block", () => {
+  const local = "| env | link |\n| --- | --- |\n| dev | one |";
+  const remote = "| env | link |\n| --- | --- |\n| dev | two |";
+  const blocks = mergeBlocks(diffRows(local, remote));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].kind, "change");
+  assert.equal(blocks[0].local, local);
+  assert.equal(blocks[0].remote, remote);
 });
