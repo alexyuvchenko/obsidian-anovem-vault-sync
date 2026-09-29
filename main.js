@@ -1304,12 +1304,12 @@ function conflictBackupPath(relativePath, timestamp, side) {
 }
 function conflictText(kind) {
   if (kind === "both-changed") {
-    return "Changed on this device and in Dropbox. Neither copy was written. Edit the file, then sync again to send your version.";
+    return "Changed on this device and in Dropbox. Review keeps lines that exist on only one side, then asks where both sides changed.";
   }
   if (kind === "deleted-local") {
-    return "This file is not on this device, and it is still in Dropbox. Nothing was deleted. Put the file back in the vault, then sync again.";
+    return "This file is not on this device, and it is still in Dropbox. Review can restore the Dropbox copy.";
   }
-  return "This file is on this device and not in Dropbox. Nothing was removed. Edit it and sync again to send it, or delete it here and sync again to drop it.";
+  return "This file is on this device and not in Dropbox. Review can send this copy.";
 }
 
 // src/dropbox.ts
@@ -1674,17 +1674,91 @@ function diffRows(local, remote) {
   }
   return rows;
 }
-function mergeLines(rows) {
-  const lines = [];
+function mergeBlocks(rows) {
+  const grouped = [];
   for (const row of rows) {
-    if (row.kind === "same") {
-      lines.push({ hunk: null, from: "same", text: row.local });
+    const prev = grouped[grouped.length - 1];
+    if (row.kind === "same" && (prev == null ? void 0 : prev.kind) === "same") {
+      prev.local = `${prev.local}
+${row.local}`;
+      prev.remote = prev.local;
       continue;
     }
-    for (const text of splitBlock(row.local)) lines.push({ hunk: row.id, from: "local", text });
-    for (const text of splitBlock(row.remote)) lines.push({ hunk: row.id, from: "remote", text });
+    grouped.push({ ...row });
   }
-  return lines;
+  const blocks = [];
+  let index = 0;
+  while (index < grouped.length) {
+    if (!isTableBlock(grouped[index])) {
+      blocks.push(grouped[index]);
+      index += 1;
+      continue;
+    }
+    const run = [];
+    while (index < grouped.length && isTableBlock(grouped[index])) {
+      run.push(grouped[index]);
+      index += 1;
+    }
+    blocks.push(combineBlocks(run));
+  }
+  return blocks;
+}
+function hunkShape(row) {
+  if (row.kind !== "change") return null;
+  if (row.local.length > 0 && row.remote.length === 0) return "local-only";
+  if (row.remote.length > 0 && row.local.length === 0) return "remote-only";
+  return "both";
+}
+function seedChoices(rows) {
+  const applied = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const shape = hunkShape(row);
+    if (shape === "local-only") applied.set(row.id, { local: true, remote: false });
+    if (shape === "remote-only") applied.set(row.id, { local: false, remote: true });
+  }
+  return applied;
+}
+function pendingHunks(rows, applied, custom) {
+  return rows.filter((row) => row.kind === "change" && !applied.has(row.id) && !custom.has(row.id));
+}
+function hunkLabel(row, choice, edited) {
+  if (edited) return "Edited";
+  const shape = hunkShape(row);
+  if (shape === "local-only") return (choice == null ? void 0 : choice.local) === false ? "Left out" : "Kept";
+  if (shape === "remote-only") return (choice == null ? void 0 : choice.remote) === false ? "Left out" : "Kept";
+  if (!choice) return "Needs a choice";
+  if (choice.local && choice.remote) return "Both kept";
+  if (choice.local) return "Kept from this device";
+  if (choice.remote) return "Kept from Dropbox";
+  return "Left out";
+}
+function blockLines(local, remote) {
+  const left = splitBlock(local);
+  const right = splitBlock(remote);
+  return {
+    local: left.map((line, index) => changedSpans(line, right[index])),
+    remote: right.map((line, index) => changedSpans(line, left[index]))
+  };
+}
+function changedSpans(line, other) {
+  if (line.length === 0) return [];
+  if (other === void 0 || other.length === 0) return [{ text: line, strong: true }];
+  if (line === other) return [{ text: line, strong: false }];
+  const left = tokens(line);
+  const right = tokens(other);
+  if (left.length * right.length > 2e4) return [{ text: line, strong: true }];
+  const spans = [];
+  for (const op of lineOps(left, right)) {
+    if (op.tag === "remote") continue;
+    const strong = op.tag === "local";
+    const prev = spans[spans.length - 1];
+    if (prev && prev.strong === strong) prev.text += op.line;
+    else spans.push({ text: op.line, strong });
+  }
+  return spans.length > 0 ? spans : [{ text: line, strong: true }];
+}
+function tokens(value) {
+  return value.split(/(\s+)/).filter((part) => part.length > 0);
 }
 function splitBlock(text) {
   if (text.length === 0) return [];
@@ -1714,6 +1788,20 @@ function hunkText(row, choice) {
   if (choice.local && row.local.length > 0) parts.push(row.local);
   if (choice.remote && row.remote.length > 0) parts.push(row.remote);
   return parts.join("\n");
+}
+function isTableBlock(row) {
+  return `${row.local}
+${row.remote}`.split("\n").some((line) => /^\s*\|/.test(line));
+}
+function combineBlocks(rows) {
+  var _a2;
+  const changed = rows.find((row) => row.kind === "change");
+  return {
+    kind: changed ? "change" : "same",
+    id: (_a2 = changed == null ? void 0 : changed.id) != null ? _a2 : rows[0].id,
+    local: rows.map((row) => row.local).filter((text) => text.length > 0).join("\n"),
+    remote: rows.map((row) => row.remote).filter((text) => text.length > 0).join("\n")
+  };
 }
 function lineOps(left, right) {
   const rows = left.length;
@@ -1780,7 +1868,8 @@ var ConflictModal = class extends import_obsidian3.Modal {
     this.plugin = plugin;
   }
   onOpen() {
-    this.setTitle("Sync conflicts");
+    const count = this.plugin.state.conflicts.length;
+    this.setTitle(count === 0 ? "Sync conflicts" : `Sync conflicts (${count})`);
     this.render();
   }
   render() {
@@ -1792,17 +1881,17 @@ var ConflictModal = class extends import_obsidian3.Modal {
       return;
     }
     contentEl.createEl("p", {
-      text: "Open a file to merge this device and Dropbox. Saving writes that result in both places and keeps a backup of each previous copy."
+      text: "Review keeps lines that exist on only one side. Where both sides changed the same lines, choose before applying. Apply writes that result in both places and keeps a backup of each previous copy."
     });
     for (const conflict of conflicts) {
       const row = contentEl.createDiv({ cls: "vault-sync-conflict" });
       row.createEl("div", { cls: "vault-sync-conflict-path", text: conflict.path });
       row.createEl("div", { cls: "setting-item-description", text: conflictText(conflict.kind) });
       const buttons = row.createDiv({ cls: "vault-sync-conflict-buttons" });
-      const open = buttons.createEl("button", { text: "Open" });
+      const open = buttons.createEl("button", { text: "Review" });
       open.onclick = () => {
         this.close();
-        new ConflictResolveModal(this.app, this.plugin, conflict.path, () => this.plugin.showConflicts()).open();
+        this.plugin.reviewConflict(conflict.path, () => this.plugin.showConflicts());
       };
     }
   }
@@ -1815,10 +1904,16 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
     this.onDone = onDone;
     this.applied = /* @__PURE__ */ new Map();
     this.custom = /* @__PURE__ */ new Map();
+    this.openFolds = /* @__PURE__ */ new Set();
     this.rows = [];
     this.binary = null;
+    this.mode = "text";
     this.saving = false;
     this.scrollTop = 0;
+    this.focusPending = false;
+    this.editing = null;
+    this.draft = "";
+    this.focusEdit = false;
     this.load = async () => {
       try {
         const sides = await this.plugin.engine.readConflictBytes(this.path);
@@ -1826,13 +1921,17 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
         const localText = sides.local ? decodeUtf8(sides.local) : "";
         const remoteText = sides.remote ? decodeUtf8(sides.remote) : "";
         if (sides.local && localText === null || sides.remote && remoteText === null) {
-          this.renderBinary(sides.local, sides.remote);
+          this.renderSideChoice("This file is not text. Choose which copy to keep.", sides.local, sides.remote);
           return;
         }
-        this.rows = diffRows(localText != null ? localText : "", remoteText != null ? remoteText : "");
-        for (const row of this.rows) {
-          if (row.kind === "change") this.applied.set(row.id, { local: true, remote: false });
+        if (!sides.local || !sides.remote) {
+          const message = sides.local ? "This file is on this device and not in Dropbox. Nothing is written until you apply." : "This file is not on this device, and it is still in Dropbox. Nothing is written until you apply.";
+          this.renderSideChoice(message, sides.local, sides.remote);
+          return;
         }
+        this.rows = mergeBlocks(diffRows(localText != null ? localText : "", remoteText != null ? remoteText : ""));
+        this.applied = seedChoices(this.rows);
+        this.focusPending = true;
         this.renderText();
       } catch (error) {
         this.contentEl.empty();
@@ -1842,6 +1941,14 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
     this.save = async () => {
       var _a2;
       if (this.saving) return;
+      if (this.mode === "binary" && !this.binary) {
+        new import_obsidian3.Notice("Choose which copy to keep.");
+        return;
+      }
+      if (this.mode === "text" && pendingHunks(this.rows, this.applied, this.custom).length > 0) {
+        new import_obsidian3.Notice("Choose the lines that differ on both sides.");
+        return;
+      }
       this.saving = true;
       try {
         const encoded = new TextEncoder().encode(textFromApplied(this.rows, this.applied, this.custom));
@@ -1863,147 +1970,316 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
     void this.load();
   }
   renderText() {
-    var _a2;
     const open = this.contentEl.querySelector(".vault-sync-merge-scroll");
     if (open) this.scrollTop = open.scrollTop;
+    const focusPending = this.focusPending;
+    const focusEdit = this.focusEdit;
+    this.focusPending = false;
+    this.focusEdit = false;
     const { contentEl } = this;
     contentEl.empty();
+    const pending = pendingHunks(this.rows, this.applied, this.custom);
+    const disagreements = this.rows.filter((row) => hunkShape(row) === "both");
+    contentEl.createEl("p", {
+      cls: "vault-sync-merge-summary",
+      text: disagreements.length === 0 ? "These copies only add different lines, and those lines are already kept. Apply writes the note on this device and in Dropbox." : pending.length === 0 ? "Every disagreement has a choice. Apply writes the note on this device and in Dropbox." : "Lines found on only one side are already kept. Choose each place where both sides changed."
+    });
     const scroll = contentEl.createDiv({ cls: "vault-sync-merge-scroll" });
-    const head = scroll.createDiv({ cls: "vault-sync-merge-line is-head" });
-    head.createDiv({ text: "This device" });
-    head.createDiv({ text: "Result" });
-    head.createDiv({ text: "Dropbox" });
-    let leftNo = 0;
-    let rightNo = 0;
-    let resultNo = 0;
-    let seenHunk = null;
-    let customShown = /* @__PURE__ */ new Set();
-    for (const line of mergeLines(this.rows)) {
-      if (line.hunk !== null && line.hunk !== seenHunk) {
-        seenHunk = line.hunk;
-        this.hunkBar(scroll, line.hunk);
-      }
-      const choice = line.hunk === null ? null : (_a2 = this.applied.get(line.hunk)) != null ? _a2 : { local: true, remote: false };
-      const custom = line.hunk !== null ? this.custom.get(line.hunk) : void 0;
-      const row = scroll.createDiv({ cls: "vault-sync-merge-line" });
-      if (line.from !== "remote") leftNo += 1;
-      if (line.from !== "local") rightNo += 1;
-      const leftOn = (choice == null ? void 0 : choice.local) === true;
-      const rightOn = (choice == null ? void 0 : choice.remote) === true;
-      this.codeCell(row, line.from === "remote" ? null : line.text, line.from === "remote" ? null : leftNo, line.from === "local", false, line.from === "local" && !leftOn);
-      if (custom !== void 0 && line.hunk !== null && !customShown.has(line.hunk)) {
-        customShown.add(line.hunk);
-        const count = custom.length === 0 ? 0 : custom.split("\n").length;
-        resultNo += count;
-        this.codeCell(row, custom, count > 0 ? resultNo - count + 1 : null, true, true);
-      } else if (custom !== void 0) {
-        this.codeCell(row, null, null, false);
-      } else if (line.hunk === null || line.from === "local" && leftOn || line.from === "remote" && rightOn) {
-        resultNo += 1;
-        this.codeCell(row, line.text, resultNo, line.hunk !== null, true);
-      } else {
-        this.codeCell(row, null, null, false);
-      }
-      this.codeCell(row, line.from === "local" ? null : line.text, line.from === "local" ? null : rightNo, line.from === "remote", false, line.from === "remote" && !rightOn);
+    for (const row of this.rows) {
+      if (row.kind === "same") this.renderContext(scroll, row);
+      else if (hunkShape(row) === "both") this.renderChoice(scroll, row);
+      else this.renderSingle(scroll, row);
     }
     const footer = contentEl.createDiv({ cls: "vault-sync-merge-footer" });
-    const accept = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
-    const acceptLeft = accept.createEl("button", { text: "Accept left" });
-    acceptLeft.onclick = () => this.pickAll({ local: true, remote: false });
-    const acceptRight = accept.createEl("button", { text: "Accept right" });
-    acceptRight.onclick = () => this.pickAll({ local: false, remote: true });
-    const apply = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
+    const nav = footer.createDiv({ cls: "vault-sync-merge-nav" });
+    const previous = nav.createEl("button", { text: "Previous" });
+    previous.onclick = () => this.jumpHunk(-1);
+    const next = nav.createEl("button", { text: "Next" });
+    next.onclick = () => this.jumpHunk(1);
+    const status = nav.createSpan({
+      cls: pending.length === 0 ? "vault-sync-merge-status" : "vault-sync-merge-status is-pending",
+      text: pending.length === 0 ? "Ready to apply" : `${pending.length} still ${pending.length === 1 ? "needs" : "need"} a choice`
+    });
+    status.setAttr("aria-live", "polite");
+    const apply = footer.createDiv({ cls: "vault-sync-merge-nav" });
+    if (disagreements.length > 1) {
+      const allLocal = apply.createEl("button", {
+        text: "This device for all",
+        title: "Where both sides changed, keep this device. Lines that exist on only one side stay as they are."
+      });
+      allLocal.onclick = () => this.keepDisagreements({ local: true, remote: false });
+      const allRemote = apply.createEl("button", {
+        text: "Dropbox for all",
+        title: "Where both sides changed, keep Dropbox. Lines that exist on only one side stay as they are."
+      });
+      allRemote.onclick = () => this.keepDisagreements({ local: false, remote: true });
+    }
     const save = apply.createEl("button", { cls: "mod-cta", text: "Apply" });
+    save.disabled = pending.length > 0;
     save.onclick = () => {
       void this.save();
     };
-    const abort = apply.createEl("button", { text: "Abort" });
-    abort.onclick = () => this.close();
-    scroll.scrollTop = this.scrollTop;
+    const cancel = apply.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    if (focusEdit) {
+      window.requestAnimationFrame(() => {
+        const area = scroll.querySelector("textarea");
+        if (area instanceof HTMLTextAreaElement) {
+          area.focus();
+          area.scrollIntoView({ block: "center" });
+        }
+      });
+    } else if (focusPending) {
+      window.requestAnimationFrame(() => {
+        var _a2;
+        const target = (_a2 = scroll.querySelector(".is-pending")) != null ? _a2 : scroll.querySelector("[data-hunk]");
+        target == null ? void 0 : target.scrollIntoView({ block: "center" });
+      });
+    } else {
+      scroll.scrollTop = this.scrollTop;
+    }
   }
-  hunkBar(parent, id) {
-    var _a2;
-    const choice = (_a2 = this.applied.get(id)) != null ? _a2 : { local: true, remote: false };
-    const bar = parent.createDiv({ cls: "vault-sync-merge-line is-resolve" });
-    const left = bar.createDiv({ cls: "vault-sync-merge-resolve" });
-    this.applyButton(left, "\xBB", "Apply left change", choice.local, () => this.setApplied(id, "local", true));
-    this.applyButton(left, "\xD7", "Ignore left change", !choice.local, () => this.setApplied(id, "local", false));
-    const actions = bar.createDiv({ cls: "vault-sync-merge-resolve" });
-    const edit = actions.createEl("button", { text: "Edit" });
-    edit.onclick = () => this.editHunk(id, actions);
-    const right = bar.createDiv({ cls: "vault-sync-merge-resolve" });
-    this.applyButton(right, "\xD7", "Ignore right change", !choice.remote, () => this.setApplied(id, "remote", false));
-    this.applyButton(right, "\xAB", "Apply right change", choice.remote, () => this.setApplied(id, "remote", true));
-  }
-  applyButton(parent, text, title, on, action) {
-    const button = parent.createEl("button", { text, title });
-    if (on) button.addClass("is-on");
-    button.onclick = action;
-  }
-  codeCell(parent, text, number, changed, result = false, ignored = false) {
-    const cell = parent.createDiv({ cls: "vault-sync-code-cell" });
-    if (text === null) {
-      cell.addClass("is-blank");
+  renderContext(parent, row) {
+    const lines = row.local.split("\n");
+    const limit = 2;
+    if (lines.length <= limit * 2 + 1 || this.openFolds.has(row.id)) {
+      parent.createDiv({ cls: "vault-sync-context", text: row.local });
+      if (lines.length > limit * 2 + 1) {
+        const fold2 = parent.createDiv({ cls: "vault-sync-fold" });
+        const button2 = fold2.createEl("button", { text: "Hide unchanged lines" });
+        button2.onclick = () => {
+          this.openFolds.delete(row.id);
+          this.renderText();
+        };
+      }
       return;
     }
-    if (changed) cell.addClass(result ? "is-result" : "is-changed");
-    if (ignored) cell.addClass("is-ignored");
-    if (text.includes("\n")) cell.addClass("is-block");
-    cell.createSpan({ cls: "vault-sync-ln", text: number === null ? "" : String(number) });
-    cell.createSpan({ cls: "vault-sync-code", text });
+    parent.createDiv({ cls: "vault-sync-context", text: lines.slice(0, limit).join("\n") });
+    const fold = parent.createDiv({ cls: "vault-sync-fold" });
+    const hidden = lines.length - limit * 2;
+    const button = fold.createEl("button", { text: `Show ${hidden} unchanged ${hidden === 1 ? "line" : "lines"}` });
+    button.onclick = () => {
+      this.openFolds.add(row.id);
+      this.renderText();
+    };
+    parent.createDiv({ cls: "vault-sync-context", text: lines.slice(-limit).join("\n") });
   }
-  setApplied(id, side, on) {
+  renderSingle(parent, row) {
     var _a2;
-    const choice = (_a2 = this.applied.get(id)) != null ? _a2 : { local: true, remote: false };
-    this.applied.set(id, { ...choice, [side]: on });
-    this.custom.delete(id);
-    this.renderText();
+    const shape = hunkShape(row);
+    const remote = shape === "remote-only";
+    const choice = this.applied.get(row.id);
+    const edited = this.custom.has(row.id);
+    const kept = remote ? (choice == null ? void 0 : choice.remote) !== false : (choice == null ? void 0 : choice.local) !== false;
+    const card = parent.createDiv({ cls: "vault-sync-change is-single" });
+    card.dataset.hunk = String(row.id);
+    if (kept || edited) card.addClass("is-done");
+    const head = card.createDiv({ cls: "vault-sync-change-head" });
+    const title = head.createDiv({ cls: "vault-sync-change-title" });
+    title.createSpan({ text: remote ? "Only in Dropbox" : "Only on this device" });
+    title.createSpan({ cls: "vault-sync-change-state", text: hunkLabel(row, choice, edited) });
+    const actions = head.createDiv({ cls: "vault-sync-head-actions" });
+    const toggle = actions.createEl("button", { text: edited ? "Keep original" : kept ? "Leave out" : "Keep" });
+    toggle.onclick = () => this.toggleKept(row, edited ? true : !kept);
+    const edit = actions.createEl("button", { text: edited ? "Edit again" : "Edit" });
+    if (edited || this.editing === row.id) edit.addClass("is-on");
+    edit.onclick = () => this.startEdit(row);
+    const body = card.createDiv({ cls: "vault-sync-side-body" });
+    if (!kept || edited) body.addClass("is-dim");
+    this.writeLines(body, remote ? row.remote : row.local);
+    if (this.editing === row.id) this.renderEditor(card, row.id);
+    else if (edited) this.renderCustom(card, (_a2 = this.custom.get(row.id)) != null ? _a2 : "");
   }
-  editHunk(id, host) {
-    var _a2, _b2;
-    const row = this.rows.find((item) => item.id === id);
-    if (!row || host.querySelector("textarea")) return;
-    const area = host.createEl("textarea", { cls: "vault-sync-merge-result" });
-    area.value = (_b2 = this.custom.get(id)) != null ? _b2 : hunkText(row, (_a2 = this.applied.get(id)) != null ? _a2 : { local: true, remote: false });
-    area.focus();
-    area.onblur = () => {
-      this.custom.set(id, area.value);
+  renderChoice(parent, row) {
+    var _a2;
+    const choice = this.applied.get(row.id);
+    const edited = this.custom.has(row.id);
+    const editing = this.editing === row.id;
+    const pending = !choice && !edited;
+    const card = parent.createDiv({ cls: "vault-sync-change" });
+    card.dataset.hunk = String(row.id);
+    if (pending) card.addClass("is-pending");
+    else card.addClass("is-done");
+    const head = card.createDiv({ cls: "vault-sync-change-head" });
+    const title = head.createDiv({ cls: "vault-sync-change-title" });
+    title.createSpan({ text: "Both sides changed" });
+    const state = title.createSpan({ cls: "vault-sync-change-state", text: hunkLabel(row, choice, edited) });
+    if (pending) state.addClass("is-pending");
+    const actions = card.createDiv({ cls: "vault-sync-change-actions" });
+    this.choiceButton(actions, "Keep this device", !edited && (choice == null ? void 0 : choice.local) === true && choice.remote === false, () => this.choose(row.id, { local: true, remote: false }));
+    this.choiceButton(actions, "Keep Dropbox", !edited && (choice == null ? void 0 : choice.remote) === true && choice.local === false, () => this.choose(row.id, { local: false, remote: true }));
+    this.choiceButton(actions, "Keep both", !edited && (choice == null ? void 0 : choice.local) === true && choice.remote === true, () => this.choose(row.id, { local: true, remote: true }));
+    this.choiceButton(actions, "Leave out", !edited && (choice == null ? void 0 : choice.local) === false && (choice == null ? void 0 : choice.remote) === false, () => this.choose(row.id, { local: false, remote: false }));
+    const edit = actions.createEl("button", { text: edited ? "Edit again" : "Edit" });
+    if (edited || editing) edit.addClass("is-on");
+    edit.onclick = () => this.startEdit(row);
+    const spans = blockLines(row.local, row.remote);
+    const sides = card.createDiv({ cls: "vault-sync-change-sides" });
+    this.renderSide(sides, "This device", "local", spans.local, !edited && !editing && (choice == null ? void 0 : choice.local) === true, !edited && !editing && choice !== void 0 && !choice.local);
+    this.renderSide(sides, "Dropbox", "remote", spans.remote, !edited && !editing && (choice == null ? void 0 : choice.remote) === true, !edited && !editing && choice !== void 0 && !choice.remote);
+    const caption = this.savedCaption(row, choice, edited, editing);
+    if (caption) card.createDiv({ cls: "vault-sync-saved", text: caption });
+    if (editing) this.renderEditor(card, row.id);
+    else if (edited) this.renderCustom(card, (_a2 = this.custom.get(row.id)) != null ? _a2 : "");
+  }
+  renderSide(parent, label, kind, lines, kept, dim) {
+    const side = parent.createDiv({ cls: `vault-sync-side is-${kind}` });
+    if (kept) side.addClass("is-kept");
+    if (dim) side.addClass("is-dim");
+    side.createDiv({ cls: "vault-sync-side-label", text: label });
+    const body = side.createDiv({ cls: "vault-sync-side-body" });
+    this.writeSpans(body, lines);
+  }
+  renderEditor(parent, id) {
+    const box = parent.createDiv({ cls: "vault-sync-result" });
+    box.createDiv({ cls: "vault-sync-result-label", text: "Edit the text that will be saved" });
+    const area = box.createEl("textarea", { cls: "vault-sync-merge-editor" });
+    area.value = this.draft;
+    area.oninput = () => {
+      this.draft = area.value;
+    };
+    const actions = box.createDiv({ cls: "vault-sync-change-actions" });
+    const use = actions.createEl("button", { cls: "mod-cta", text: "Use this text" });
+    use.onclick = () => {
+      this.custom.set(id, this.draft);
+      this.editing = null;
+      this.renderText();
+    };
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => {
+      this.editing = null;
       this.renderText();
     };
   }
-  pickAll(choice) {
-    this.custom.clear();
+  renderCustom(parent, text) {
+    const box = parent.createDiv({ cls: "vault-sync-result" });
+    box.createDiv({ cls: "vault-sync-result-label", text: "Text that will be saved" });
+    if (text.length === 0) {
+      box.createDiv({ cls: "vault-sync-side-empty", text: "These lines will be left out." });
+      return;
+    }
+    const body = box.createDiv({ cls: "vault-sync-side-body" });
+    this.writeLines(body, text);
+  }
+  savedCaption(row, choice, edited, editing) {
+    if (editing || edited || !choice) return null;
+    if (choice.local && choice.remote) return "Saving this device's text, then Dropbox's text.";
+    if (choice.local) return "Saving the text from this device.";
+    if (choice.remote) return "Saving the text from Dropbox.";
+    return row.local.length > 0 || row.remote.length > 0 ? "These lines will be left out." : null;
+  }
+  writeLines(parent, text) {
+    const lines = text.length === 0 ? [] : text.split("\n");
+    if (lines.length === 0) {
+      parent.createDiv({ cls: "vault-sync-side-empty", text: "Nothing on this side" });
+      return;
+    }
+    for (const line of lines) {
+      const row = parent.createDiv({ cls: "vault-sync-side-line" });
+      if (line.length === 0) row.addClass("is-blank");
+      else row.setText(line);
+    }
+  }
+  writeSpans(parent, lines) {
+    if (lines.length === 0) {
+      parent.createDiv({ cls: "vault-sync-side-empty", text: "Nothing on this side" });
+      return;
+    }
+    for (const spans of lines) {
+      const row = parent.createDiv({ cls: "vault-sync-side-line" });
+      if (spans.length === 0 || spans.every((span) => span.text.length === 0)) {
+        row.addClass("is-blank");
+        continue;
+      }
+      for (const span of spans) {
+        const node = row.createSpan({ text: span.text });
+        if (span.strong) node.addClass("is-strong");
+      }
+    }
+  }
+  choiceButton(parent, text, on, action) {
+    const button = parent.createEl("button", { text });
+    if (on) button.addClass("is-on");
+    button.onclick = action;
+  }
+  choose(id, choice) {
+    this.editing = null;
+    this.applied.set(id, choice);
+    this.custom.delete(id);
+    this.renderText();
+  }
+  toggleKept(row, on) {
+    this.editing = null;
+    this.applied.set(row.id, hunkShape(row) === "remote-only" ? { local: false, remote: on } : { local: on, remote: false });
+    this.custom.delete(row.id);
+    this.renderText();
+  }
+  startEdit(row) {
+    var _a2, _b2;
+    if (this.editing === row.id) return;
+    const choice = (_a2 = this.applied.get(row.id)) != null ? _a2 : { local: true, remote: true };
+    this.draft = (_b2 = this.custom.get(row.id)) != null ? _b2 : hunkText(row, choice.local || choice.remote ? choice : { local: true, remote: true });
+    this.editing = row.id;
+    this.focusEdit = true;
+    this.renderText();
+  }
+  keepDisagreements(choice) {
+    this.editing = null;
     for (const row of this.rows) {
-      if (row.kind === "change") this.applied.set(row.id, { ...choice });
+      if (hunkShape(row) !== "both") continue;
+      this.applied.set(row.id, { ...choice });
+      this.custom.delete(row.id);
     }
     this.renderText();
   }
-  renderBinary(local, remote) {
+  jumpHunk(step) {
+    const bars = Array.from(this.contentEl.querySelectorAll("[data-hunk]"));
+    if (bars.length === 0) return;
+    const pending = bars.filter((bar) => bar.hasClass("is-pending"));
+    const list = pending.length > 0 ? pending : bars;
+    const current = list.findIndex((bar) => bar.hasClass("is-current"));
+    const next = list[(current + step + list.length) % list.length];
+    for (const bar of bars) bar.removeClass("is-current");
+    next.addClass("is-current");
+    next.scrollIntoView({ block: "center" });
+  }
+  renderSideChoice(message, local, remote) {
+    this.mode = "binary";
+    this.binary = null;
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("p", { text: "This file is not text. Choose which copy becomes the resolved file." });
-    const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
+    contentEl.createEl("p", { cls: "vault-sync-merge-summary", text: message });
+    const sides = contentEl.createDiv({ cls: "vault-sync-change-sides vault-sync-file-choice" });
+    const choose = (bytes, button) => {
+      this.binary = bytes;
+      for (const item of Array.from(sides.querySelectorAll("button"))) item.removeClass("is-on");
+      button.addClass("is-on");
+      const save2 = contentEl.querySelector(".vault-sync-binary-save");
+      if (save2) save2.disabled = false;
+    };
     if (local) {
-      const keep = buttons.createEl("button", { text: "Use this device" });
-      keep.onclick = () => {
-        this.binary = local;
-      };
+      const side = sides.createDiv({ cls: "vault-sync-side is-local" });
+      side.createDiv({ cls: "vault-sync-side-label", text: "This device" });
+      side.createDiv({ cls: "vault-sync-side-empty", text: "Keep the copy stored on this device." });
+      const keep = side.createEl("button", { text: "Keep this device" });
+      keep.onclick = () => choose(local, keep);
     }
     if (remote) {
-      const keep = buttons.createEl("button", { text: "Use Dropbox" });
-      keep.onclick = () => {
-        this.binary = remote;
-      };
+      const side = sides.createDiv({ cls: "vault-sync-side is-remote" });
+      side.createDiv({ cls: "vault-sync-side-label", text: "Dropbox" });
+      side.createDiv({ cls: "vault-sync-side-empty", text: "Keep the copy stored in Dropbox." });
+      const keep = side.createEl("button", { text: "Keep Dropbox" });
+      keep.onclick = () => choose(remote, keep);
     }
-    this.binary = local != null ? local : remote;
-    this.saveButton(contentEl);
-  }
-  saveButton(parent) {
-    const buttons = parent.createDiv({ cls: "modal-button-container" });
-    const save = buttons.createEl("button", { cls: "mod-cta", text: "Save resolved copy" });
+    const footer = contentEl.createDiv({ cls: "vault-sync-merge-footer" });
+    const apply = footer.createDiv({ cls: "vault-sync-merge-nav" });
+    const save = apply.createEl("button", { cls: "mod-cta vault-sync-binary-save", text: "Apply" });
+    save.disabled = true;
     save.onclick = () => {
       void this.save();
     };
+    const cancel = apply.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
   }
 };
 
@@ -2643,6 +2919,7 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
     this.state = emptyState();
     this.running = false;
     this.statusBar = null;
+    this.conflictStatus = null;
     this.backgroundTimer = null;
     this.lastBackgroundAt = 0;
     this.scheduleBackgroundSync = () => {
@@ -2696,6 +2973,7 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
         const conflictsChanged = this.state.conflicts.length !== conflictsBefore;
         const moved = report.uploaded > 0 || report.downloaded > 0 || report.failed.length > 0 || report.cancelled;
         if (!background || moved || conflictsChanged) new import_obsidian6.Notice(this.settings.lastSyncSummary);
+        this.refreshConflictChrome();
         if (this.state.conflicts.length > 0 && (!background || conflictsChanged)) this.showConflicts();
       } catch (error) {
         modal == null ? void 0 : modal.finish();
@@ -2795,6 +3073,17 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
       callback: () => this.showConflicts()
     });
     this.addCommand({
+      id: "review-conflict",
+      name: "Review sync conflict in the active note",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const open = !!file && this.state.conflicts.some((conflict) => pathKey(conflict.path) === pathKey(file.path));
+        if (checking) return open;
+        if (file && open) this.reviewConflict(file.path);
+        return open;
+      }
+    });
+    this.addCommand({
       id: "update-plugin",
       name: "Install or update plugin from GitHub",
       callback: () => {
@@ -2817,9 +3106,16 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
     if (!import_obsidian6.Platform.isMobile) {
       this.statusBar = this.addStatusBarItem();
       this.statusBar.setText(this.settings.lastSyncSummary || "Sync");
+      this.conflictStatus = this.addStatusBarItem();
+      this.conflictStatus.addClass("vault-sync-conflict-status");
+      this.conflictStatus.onclick = () => this.showConflicts();
     }
+    this.registerEvent(this.app.workspace.on("file-open", () => this.refreshConflictBanner()));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshConflictBanner()));
+    this.refreshConflictChrome();
     this.scheduleBackgroundSync();
     this.app.workspace.onLayoutReady(() => {
+      this.refreshConflictChrome();
       if (this.state.conflicts.length > 0) this.showConflicts();
       const start = window.setTimeout(() => void this.syncNow("background"), 5e3);
       this.register(() => window.clearTimeout(start));
@@ -2834,11 +3130,49 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
   showConflicts() {
     new ConflictModal(this.app, this).open();
   }
+  reviewConflict(path, onDone) {
+    new ConflictResolveModal(this.app, this, path, () => {
+      this.refreshConflictChrome();
+      onDone == null ? void 0 : onDone();
+    }).open();
+  }
+  refreshConflictChrome() {
+    const count = this.state.conflicts.length;
+    if (this.conflictStatus) {
+      this.conflictStatus.toggleClass("is-clear", count === 0);
+      this.conflictStatus.setText(count === 0 ? "" : `${count} ${count === 1 ? "conflict" : "conflicts"}`);
+    }
+    this.refreshConflictBanner();
+  }
+  onunload() {
+    document.querySelectorAll(".vault-sync-conflict-banner").forEach((el) => el.remove());
+  }
+  refreshConflictBanner() {
+    var _a2, _b2;
+    document.querySelectorAll(".vault-sync-conflict-banner").forEach((el) => el.remove());
+    const file = this.app.workspace.getActiveFile();
+    if (!file || !this.state.conflicts.some((conflict) => pathKey(conflict.path) === pathKey(file.path))) return;
+    const view = (_b2 = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView)) != null ? _b2 : (_a2 = this.app.workspace.getMostRecentLeaf()) == null ? void 0 : _a2.view;
+    if (!view) return;
+    for (const host of bannerHosts(view.containerEl)) {
+      const banner = host.createDiv({ cls: "vault-sync-conflict-banner" });
+      host.prepend(banner);
+      banner.createSpan({ text: "This note has a sync conflict." });
+      const review = banner.createEl("button", { text: "Review" });
+      review.onclick = () => this.reviewConflict(file.path);
+    }
+  }
 };
 async function reloadPlugin(app, id) {
   const plugins = app.plugins;
   await plugins.disablePlugin(id);
   await plugins.enablePlugin(id);
+}
+function bannerHosts(container) {
+  const found = [".markdown-source-view", ".markdown-reading-view"].map((selector) => container.querySelector(selector)).filter((node) => node instanceof HTMLElement);
+  if (found.length > 0) return found;
+  const content = container.querySelector(".view-content");
+  return [content instanceof HTMLElement ? content : container];
 }
 function normalizeSyncMinutes(value) {
   if (!Number.isFinite(value)) return 5;

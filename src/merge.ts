@@ -136,14 +136,14 @@ export function pendingHunks(
 
 export function hunkLabel(row: DiffRow, choice: ApplyChoice | undefined, edited: boolean): string {
   if (edited) return "Edited";
-  if (!choice) return "Both sides changed. Choose before applying.";
   const shape = hunkShape(row);
-  if (shape === "local-only" && choice.local && !choice.remote) return "Only on this device. Kept.";
-  if (shape === "remote-only" && choice.remote && !choice.local) return "Only in Dropbox. Kept.";
-  if (choice.local && choice.remote) return "Both sides kept.";
-  if (choice.local) return "This device kept.";
-  if (choice.remote) return "Dropbox kept.";
-  return "Both sides left out.";
+  if (shape === "local-only") return choice?.local === false ? "Left out" : "Kept";
+  if (shape === "remote-only") return choice?.remote === false ? "Left out" : "Kept";
+  if (!choice) return "Needs a choice";
+  if (choice.local && choice.remote) return "Both kept";
+  if (choice.local) return "Kept from this device";
+  if (choice.remote) return "Kept from Dropbox";
+  return "Left out";
 }
 
 export type DisplayLine =
@@ -175,6 +175,15 @@ export function foldContext(lines: MergeLine[], context = 2, open: ReadonlySet<n
     }
   }
   return display;
+}
+
+export function blockLines(local: string, remote: string): { local: TextSpan[][]; remote: TextSpan[][] } {
+  const left = splitBlock(local);
+  const right = splitBlock(remote);
+  return {
+    local: left.map((line, index) => changedSpans(line, right[index])),
+    remote: right.map((line, index) => changedSpans(line, left[index])),
+  };
 }
 
 export function changedSpans(line: string, other: string | undefined): TextSpan[] {

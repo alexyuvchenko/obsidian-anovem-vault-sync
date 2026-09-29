@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedSpans, diffRows, foldContext, hunkLabel, mergeBlocks, mergeLines, pendingHunks, seedChoices, textFromApplied, textFromChoices } from "./merge";
+import { blockLines, changedSpans, diffRows, foldContext, hunkLabel, mergeBlocks, mergeLines, pendingHunks, seedChoices, textFromApplied, textFromChoices } from "./merge";
 import { conflictBackupPath } from "./paths";
 
 test("backup names keep the folder and mark which side", () => {
@@ -67,7 +67,24 @@ test("a line changed on both sides stays undecided", () => {
   const rows = diffRows("title\nalpha\nend", "title\nbeta\nend");
   const pending = pendingHunks(rows, seedChoices(rows), new Map());
   assert.equal(pending.length, 1);
-  assert.equal(hunkLabel(pending[0], undefined, false), "Both sides changed. Choose before applying.");
+  assert.equal(hunkLabel(pending[0], undefined, false), "Needs a choice");
+});
+
+test("leaving out a one-sided line says so", () => {
+  const rows = diffRows("title\nonly local\nend", "title\nend");
+  const added = rows.find((row) => row.kind === "change");
+  assert.ok(added);
+  assert.equal(hunkLabel(added, { local: true, remote: false }, false), "Kept");
+  assert.equal(hunkLabel(added, { local: false, remote: false }, false), "Left out");
+});
+
+test("a changed word is marked on each side of a block", () => {
+  const lines = blockLines("hello world", "hello there");
+  assert.deepEqual(lines.local[0], [
+    { text: "hello ", strong: false },
+    { text: "world", strong: true },
+  ]);
+  assert.deepEqual(lines.remote[0][1], { text: "there", strong: true });
 });
 
 test("only the changed word is marked inside a line", () => {

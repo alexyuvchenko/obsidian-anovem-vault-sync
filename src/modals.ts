@@ -1,18 +1,18 @@
 import { Modal, Notice, type App } from "obsidian";
 import { errorMessage } from "./errors";
 import {
+  blockLines,
   decodeUtf8,
   diffRows,
-  foldContext,
   hunkLabel,
+  hunkShape,
   hunkText,
-  mergeLines,
+  mergeBlocks,
   pendingHunks,
   seedChoices,
   textFromApplied,
   type ApplyChoice,
   type DiffRow,
-  type MergeLine,
   type TextSpan,
 } from "./merge";
 import { conflictText } from "./paths";
@@ -99,6 +99,9 @@ export class ConflictResolveModal extends Modal {
   private saving = false;
   private scrollTop = 0;
   private focusPending = false;
+  private editing: number | null = null;
+  private draft = "";
+  private focusEdit = false;
 
   constructor(
     app: App,
@@ -133,7 +136,7 @@ export class ConflictResolveModal extends Modal {
         this.renderSideChoice(message, sides.local, sides.remote);
         return;
       }
-      this.rows = diffRows(localText ?? "", remoteText ?? "");
+      this.rows = mergeBlocks(diffRows(localText ?? "", remoteText ?? ""));
       this.applied = seedChoices(this.rows);
       this.focusPending = true;
       this.renderText();
@@ -147,83 +150,67 @@ export class ConflictResolveModal extends Modal {
     const open = this.contentEl.querySelector(".vault-sync-merge-scroll");
     if (open) this.scrollTop = open.scrollTop;
     const focusPending = this.focusPending;
+    const focusEdit = this.focusEdit;
     this.focusPending = false;
+    this.focusEdit = false;
     const { contentEl } = this;
     contentEl.empty();
     const pending = pendingHunks(this.rows, this.applied, this.custom);
+    const disagreements = this.rows.filter((row) => hunkShape(row) === "both");
     contentEl.createEl("p", {
       cls: "vault-sync-merge-summary",
-      text: pending.length === 0
-        ? "Every change has a choice. Apply writes the result on this device and in Dropbox."
-        : `${pending.length} ${pending.length === 1 ? "change differs" : "changes differ"} on both sides. Choose each one before applying. Lines that exist on only one side are already kept.`,
+      text: disagreements.length === 0
+        ? "These copies only add different lines, and those lines are already kept. Apply writes the note on this device and in Dropbox."
+        : pending.length === 0
+          ? "Every disagreement has a choice. Apply writes the note on this device and in Dropbox."
+          : "Lines found on only one side are already kept. Choose each place where both sides changed.",
     });
     const scroll = contentEl.createDiv({ cls: "vault-sync-merge-scroll" });
-    const head = scroll.createDiv({ cls: "vault-sync-merge-line is-head" });
-    head.createDiv({ text: "This device" });
-    head.createDiv({ text: "Result" });
-    head.createDiv({ text: "Dropbox" });
-    const lines = mergeLines(this.rows);
-    const numbers = lineNumbers(lines);
-    let resultNo = 0;
-    let seenHunk: number | null = null;
-    const customShown = new Set<number>();
-    for (const item of foldContext(lines, 2, this.openFolds)) {
-      if (item.kind === "fold") {
-        const fold = scroll.createDiv({ cls: "vault-sync-merge-fold" });
-        fold.createSpan({ text: `${item.count} unchanged ${item.count === 1 ? "line" : "lines"}` });
-        fold.createSpan({ cls: "vault-sync-fold-action", text: "Expand" });
-        fold.onclick = () => {
-          this.openFolds.add(item.id);
-          this.renderText();
-        };
-        continue;
-      }
-      const line = item.line;
-      if (line.hunk !== null && line.hunk !== seenHunk) {
-        seenHunk = line.hunk;
-        this.hunkBar(scroll, line.hunk);
-      }
-      const choice = line.hunk === null ? undefined : this.applied.get(line.hunk);
-      const custom = line.hunk !== null ? this.custom.get(line.hunk) : undefined;
-      const row = scroll.createDiv({ cls: "vault-sync-merge-line" });
-      const leftOn = choice?.local === true;
-      const rightOn = choice?.remote === true;
-      const numbered = numbers[item.index];
-      this.codeCell(row, line.from === "remote" ? null : line.text, line.from === "remote" ? null : numbered.left, line.from === "local", false, choice !== undefined && line.from === "local" && !leftOn, line.spans);
-      if (custom !== undefined && line.hunk !== null && !customShown.has(line.hunk)) {
-        customShown.add(line.hunk);
-        const count = custom.length === 0 ? 0 : custom.split("\n").length;
-        resultNo += count;
-        this.codeCell(row, custom, count > 0 ? resultNo - count + 1 : null, true, true);
-      } else if (custom !== undefined) {
-        this.codeCell(row, null, null, false);
-      } else if (line.hunk === null || (line.from === "local" && leftOn) || (line.from === "remote" && rightOn)) {
-        resultNo += 1;
-        this.codeCell(row, line.text, resultNo, line.hunk !== null, true, false, line.spans);
-      } else {
-        this.codeCell(row, null, null, false);
-      }
-      this.codeCell(row, line.from === "local" ? null : line.text, line.from === "local" ? null : numbered.right, line.from === "remote", false, choice !== undefined && line.from === "remote" && !rightOn, line.spans);
+    for (const row of this.rows) {
+      if (row.kind === "same") this.renderContext(scroll, row);
+      else if (hunkShape(row) === "both") this.renderChoice(scroll, row);
+      else this.renderSingle(scroll, row);
     }
     const footer = contentEl.createDiv({ cls: "vault-sync-merge-footer" });
-    const accept = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
-    const previous = accept.createEl("button", { text: "Previous" });
+    const nav = footer.createDiv({ cls: "vault-sync-merge-nav" });
+    const previous = nav.createEl("button", { text: "Previous" });
     previous.onclick = () => this.jumpHunk(-1);
-    const next = accept.createEl("button", { text: "Next" });
+    const next = nav.createEl("button", { text: "Next" });
     next.onclick = () => this.jumpHunk(1);
-    const acceptLeft = accept.createEl("button", { text: "Keep this device" });
-    acceptLeft.onclick = () => this.pickAll({ local: true, remote: false });
-    const acceptRight = accept.createEl("button", { text: "Keep Dropbox" });
-    acceptRight.onclick = () => this.pickAll({ local: false, remote: true });
-    const apply = footer.createDiv({ cls: "vault-sync-conflict-buttons" });
-    const save = apply.createEl("button", { cls: "mod-cta", text: pending.length === 0 ? "Apply" : `Choose ${pending.length}` });
+    const status = nav.createSpan({
+      cls: pending.length === 0 ? "vault-sync-merge-status" : "vault-sync-merge-status is-pending",
+      text: pending.length === 0 ? "Ready to apply" : `${pending.length} still ${pending.length === 1 ? "needs" : "need"} a choice`,
+    });
+    status.setAttr("aria-live", "polite");
+    const apply = footer.createDiv({ cls: "vault-sync-merge-nav" });
+    if (disagreements.length > 1) {
+      const allLocal = apply.createEl("button", {
+        text: "This device for all",
+        title: "Where both sides changed, keep this device. Lines that exist on only one side stay as they are.",
+      });
+      allLocal.onclick = () => this.keepDisagreements({ local: true, remote: false });
+      const allRemote = apply.createEl("button", {
+        text: "Dropbox for all",
+        title: "Where both sides changed, keep Dropbox. Lines that exist on only one side stay as they are.",
+      });
+      allRemote.onclick = () => this.keepDisagreements({ local: false, remote: true });
+    }
+    const save = apply.createEl("button", { cls: "mod-cta", text: "Apply" });
     save.disabled = pending.length > 0;
     save.onclick = () => {
       void this.save();
     };
-    const abort = apply.createEl("button", { text: "Abort" });
-    abort.onclick = () => this.close();
-    if (focusPending) {
+    const cancel = apply.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    if (focusEdit) {
+      window.requestAnimationFrame(() => {
+        const area = scroll.querySelector("textarea");
+        if (area instanceof HTMLTextAreaElement) {
+          area.focus();
+          area.scrollIntoView({ block: "center" });
+        }
+      });
+    } else if (focusPending) {
       window.requestAnimationFrame(() => {
         const target = scroll.querySelector(".is-pending") ?? scroll.querySelector("[data-hunk]");
         target?.scrollIntoView({ block: "center" });
@@ -233,23 +220,208 @@ export class ConflictResolveModal extends Modal {
     }
   }
 
-  private hunkBar(parent: HTMLElement, id: number): void {
-    const row = this.rows.find((item) => item.id === id);
-    const choice = this.applied.get(id);
-    const edited = this.custom.has(id);
-    const bar = parent.createDiv({ cls: "vault-sync-merge-line is-resolve" });
-    bar.dataset.hunk = String(id);
-    if (!choice && !edited) bar.addClass("is-pending");
-    const left = bar.createDiv({ cls: "vault-sync-merge-resolve" });
-    this.applyButton(left, "»", "Keep this device's change", choice?.local === true, () => this.setApplied(id, "local", true));
-    this.applyButton(left, "×", "Leave out this device's change", choice !== undefined && !choice.local, () => this.setApplied(id, "local", false));
-    const actions = bar.createDiv({ cls: "vault-sync-merge-resolve" });
-    if (row) actions.createSpan({ cls: "vault-sync-hunk-label", text: hunkLabel(row, choice, edited) });
-    const edit = actions.createEl("button", { text: "Edit" });
-    edit.onclick = () => this.editHunk(id, actions);
-    const right = bar.createDiv({ cls: "vault-sync-merge-resolve" });
-    this.applyButton(right, "×", "Leave out Dropbox's change", choice !== undefined && !choice.remote, () => this.setApplied(id, "remote", false));
-    this.applyButton(right, "«", "Keep Dropbox's change", choice?.remote === true, () => this.setApplied(id, "remote", true));
+  private renderContext(parent: HTMLElement, row: DiffRow): void {
+    const lines = row.local.split("\n");
+    const limit = 2;
+    if (lines.length <= limit * 2 + 1 || this.openFolds.has(row.id)) {
+      parent.createDiv({ cls: "vault-sync-context", text: row.local });
+      if (lines.length > limit * 2 + 1) {
+        const fold = parent.createDiv({ cls: "vault-sync-fold" });
+        const button = fold.createEl("button", { text: "Hide unchanged lines" });
+        button.onclick = () => {
+          this.openFolds.delete(row.id);
+          this.renderText();
+        };
+      }
+      return;
+    }
+    parent.createDiv({ cls: "vault-sync-context", text: lines.slice(0, limit).join("\n") });
+    const fold = parent.createDiv({ cls: "vault-sync-fold" });
+    const hidden = lines.length - limit * 2;
+    const button = fold.createEl("button", { text: `Show ${hidden} unchanged ${hidden === 1 ? "line" : "lines"}` });
+    button.onclick = () => {
+      this.openFolds.add(row.id);
+      this.renderText();
+    };
+    parent.createDiv({ cls: "vault-sync-context", text: lines.slice(-limit).join("\n") });
+  }
+
+  private renderSingle(parent: HTMLElement, row: DiffRow): void {
+    const shape = hunkShape(row);
+    const remote = shape === "remote-only";
+    const choice = this.applied.get(row.id);
+    const edited = this.custom.has(row.id);
+    const kept = remote ? choice?.remote !== false : choice?.local !== false;
+    const card = parent.createDiv({ cls: "vault-sync-change is-single" });
+    card.dataset.hunk = String(row.id);
+    if (kept || edited) card.addClass("is-done");
+    const head = card.createDiv({ cls: "vault-sync-change-head" });
+    const title = head.createDiv({ cls: "vault-sync-change-title" });
+    title.createSpan({ text: remote ? "Only in Dropbox" : "Only on this device" });
+    title.createSpan({ cls: "vault-sync-change-state", text: hunkLabel(row, choice, edited) });
+    const actions = head.createDiv({ cls: "vault-sync-head-actions" });
+    const toggle = actions.createEl("button", { text: edited ? "Keep original" : kept ? "Leave out" : "Keep" });
+    toggle.onclick = () => this.toggleKept(row, edited ? true : !kept);
+    const edit = actions.createEl("button", { text: edited ? "Edit again" : "Edit" });
+    if (edited || this.editing === row.id) edit.addClass("is-on");
+    edit.onclick = () => this.startEdit(row);
+    const body = card.createDiv({ cls: "vault-sync-side-body" });
+    if (!kept || edited) body.addClass("is-dim");
+    this.writeLines(body, remote ? row.remote : row.local);
+    if (this.editing === row.id) this.renderEditor(card, row.id);
+    else if (edited) this.renderCustom(card, this.custom.get(row.id) ?? "");
+  }
+
+  private renderChoice(parent: HTMLElement, row: DiffRow): void {
+    const choice = this.applied.get(row.id);
+    const edited = this.custom.has(row.id);
+    const editing = this.editing === row.id;
+    const pending = !choice && !edited;
+    const card = parent.createDiv({ cls: "vault-sync-change" });
+    card.dataset.hunk = String(row.id);
+    if (pending) card.addClass("is-pending");
+    else card.addClass("is-done");
+    const head = card.createDiv({ cls: "vault-sync-change-head" });
+    const title = head.createDiv({ cls: "vault-sync-change-title" });
+    title.createSpan({ text: "Both sides changed" });
+    const state = title.createSpan({ cls: "vault-sync-change-state", text: hunkLabel(row, choice, edited) });
+    if (pending) state.addClass("is-pending");
+    const actions = card.createDiv({ cls: "vault-sync-change-actions" });
+    this.choiceButton(actions, "Keep this device", !edited && choice?.local === true && choice.remote === false, () => this.choose(row.id, { local: true, remote: false }));
+    this.choiceButton(actions, "Keep Dropbox", !edited && choice?.remote === true && choice.local === false, () => this.choose(row.id, { local: false, remote: true }));
+    this.choiceButton(actions, "Keep both", !edited && choice?.local === true && choice.remote === true, () => this.choose(row.id, { local: true, remote: true }));
+    this.choiceButton(actions, "Leave out", !edited && choice?.local === false && choice?.remote === false, () => this.choose(row.id, { local: false, remote: false }));
+    const edit = actions.createEl("button", { text: edited ? "Edit again" : "Edit" });
+    if (edited || editing) edit.addClass("is-on");
+    edit.onclick = () => this.startEdit(row);
+    const spans = blockLines(row.local, row.remote);
+    const sides = card.createDiv({ cls: "vault-sync-change-sides" });
+    this.renderSide(sides, "This device", "local", spans.local, !edited && !editing && choice?.local === true, !edited && !editing && choice !== undefined && !choice.local);
+    this.renderSide(sides, "Dropbox", "remote", spans.remote, !edited && !editing && choice?.remote === true, !edited && !editing && choice !== undefined && !choice.remote);
+    const caption = this.savedCaption(row, choice, edited, editing);
+    if (caption) card.createDiv({ cls: "vault-sync-saved", text: caption });
+    if (editing) this.renderEditor(card, row.id);
+    else if (edited) this.renderCustom(card, this.custom.get(row.id) ?? "");
+  }
+
+  private renderSide(parent: HTMLElement, label: string, kind: "local" | "remote", lines: TextSpan[][], kept: boolean, dim: boolean): void {
+    const side = parent.createDiv({ cls: `vault-sync-side is-${kind}` });
+    if (kept) side.addClass("is-kept");
+    if (dim) side.addClass("is-dim");
+    side.createDiv({ cls: "vault-sync-side-label", text: label });
+    const body = side.createDiv({ cls: "vault-sync-side-body" });
+    this.writeSpans(body, lines);
+  }
+
+  private renderEditor(parent: HTMLElement, id: number): void {
+    const box = parent.createDiv({ cls: "vault-sync-result" });
+    box.createDiv({ cls: "vault-sync-result-label", text: "Edit the text that will be saved" });
+    const area = box.createEl("textarea", { cls: "vault-sync-merge-editor" });
+    area.value = this.draft;
+    area.oninput = () => {
+      this.draft = area.value;
+    };
+    const actions = box.createDiv({ cls: "vault-sync-change-actions" });
+    const use = actions.createEl("button", { cls: "mod-cta", text: "Use this text" });
+    use.onclick = () => {
+      this.custom.set(id, this.draft);
+      this.editing = null;
+      this.renderText();
+    };
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => {
+      this.editing = null;
+      this.renderText();
+    };
+  }
+
+  private renderCustom(parent: HTMLElement, text: string): void {
+    const box = parent.createDiv({ cls: "vault-sync-result" });
+    box.createDiv({ cls: "vault-sync-result-label", text: "Text that will be saved" });
+    if (text.length === 0) {
+      box.createDiv({ cls: "vault-sync-side-empty", text: "These lines will be left out." });
+      return;
+    }
+    const body = box.createDiv({ cls: "vault-sync-side-body" });
+    this.writeLines(body, text);
+  }
+
+  private savedCaption(row: DiffRow, choice: ApplyChoice | undefined, edited: boolean, editing: boolean): string | null {
+    if (editing || edited || !choice) return null;
+    if (choice.local && choice.remote) return "Saving this device's text, then Dropbox's text.";
+    if (choice.local) return "Saving the text from this device.";
+    if (choice.remote) return "Saving the text from Dropbox.";
+    return row.local.length > 0 || row.remote.length > 0 ? "These lines will be left out." : null;
+  }
+
+  private writeLines(parent: HTMLElement, text: string): void {
+    const lines = text.length === 0 ? [] : text.split("\n");
+    if (lines.length === 0) {
+      parent.createDiv({ cls: "vault-sync-side-empty", text: "Nothing on this side" });
+      return;
+    }
+    for (const line of lines) {
+      const row = parent.createDiv({ cls: "vault-sync-side-line" });
+      if (line.length === 0) row.addClass("is-blank");
+      else row.setText(line);
+    }
+  }
+
+  private writeSpans(parent: HTMLElement, lines: TextSpan[][]): void {
+    if (lines.length === 0) {
+      parent.createDiv({ cls: "vault-sync-side-empty", text: "Nothing on this side" });
+      return;
+    }
+    for (const spans of lines) {
+      const row = parent.createDiv({ cls: "vault-sync-side-line" });
+      if (spans.length === 0 || spans.every((span) => span.text.length === 0)) {
+        row.addClass("is-blank");
+        continue;
+      }
+      for (const span of spans) {
+        const node = row.createSpan({ text: span.text });
+        if (span.strong) node.addClass("is-strong");
+      }
+    }
+  }
+
+  private choiceButton(parent: HTMLElement, text: string, on: boolean, action: () => void): void {
+    const button = parent.createEl("button", { text });
+    if (on) button.addClass("is-on");
+    button.onclick = action;
+  }
+
+  private choose(id: number, choice: ApplyChoice): void {
+    this.editing = null;
+    this.applied.set(id, choice);
+    this.custom.delete(id);
+    this.renderText();
+  }
+
+  private toggleKept(row: DiffRow, on: boolean): void {
+    this.editing = null;
+    this.applied.set(row.id, hunkShape(row) === "remote-only" ? { local: false, remote: on } : { local: on, remote: false });
+    this.custom.delete(row.id);
+    this.renderText();
+  }
+
+  private startEdit(row: DiffRow): void {
+    if (this.editing === row.id) return;
+    const choice = this.applied.get(row.id) ?? { local: true, remote: true };
+    this.draft = this.custom.get(row.id) ?? hunkText(row, choice.local || choice.remote ? choice : { local: true, remote: true });
+    this.editing = row.id;
+    this.focusEdit = true;
+    this.renderText();
+  }
+
+  private keepDisagreements(choice: ApplyChoice): void {
+    this.editing = null;
+    for (const row of this.rows) {
+      if (hunkShape(row) !== "both") continue;
+      this.applied.set(row.id, { ...choice });
+      this.custom.delete(row.id);
+    }
+    this.renderText();
   }
 
   private jumpHunk(step: number): void {
@@ -264,95 +436,43 @@ export class ConflictResolveModal extends Modal {
     next.scrollIntoView({ block: "center" });
   }
 
-  private applyButton(parent: HTMLElement, text: string, title: string, on: boolean, action: () => void): void {
-    const button = parent.createEl("button", { text, title });
-    if (on) button.addClass("is-on");
-    button.onclick = action;
-  }
-
-  private codeCell(
-    parent: HTMLElement,
-    text: string | null,
-    number: number | null,
-    changed: boolean,
-    result = false,
-    ignored = false,
-    spans?: TextSpan[],
-  ): void {
-    const cell = parent.createDiv({ cls: "vault-sync-code-cell" });
-    if (text === null) {
-      cell.addClass("is-blank");
-      return;
-    }
-    if (changed) cell.addClass(result ? "is-result" : "is-changed");
-    if (ignored) cell.addClass("is-ignored");
-    if (text.includes("\n")) cell.addClass("is-block");
-    cell.createSpan({ cls: "vault-sync-ln", text: number === null ? "" : String(number) });
-    const code = cell.createSpan({ cls: "vault-sync-code" });
-    const parts = spans && spans.length > 0 ? spans : [{ text, strong: false }];
-    for (const span of parts) {
-      const node = code.createSpan({ text: span.text });
-      if (span.strong) node.addClass("is-strong");
-    }
-  }
-
-  private setApplied(id: number, side: "local" | "remote", on: boolean): void {
-    const choice = this.applied.get(id) ?? { local: false, remote: false };
-    this.applied.set(id, { ...choice, [side]: on });
-    this.custom.delete(id);
-    this.renderText();
-  }
-
-  private editHunk(id: number, host: HTMLElement): void {
-    const row = this.rows.find((item) => item.id === id);
-    if (!row || host.querySelector("textarea")) return;
-    const area = host.createEl("textarea", { cls: "vault-sync-merge-result" });
-    area.value = this.custom.get(id) ?? hunkText(row, this.applied.get(id) ?? { local: true, remote: true });
-    area.focus();
-    area.onblur = () => {
-      this.custom.set(id, area.value);
-      this.renderText();
-    };
-  }
-
-  private pickAll(choice: ApplyChoice): void {
-    this.custom.clear();
-    for (const row of this.rows) {
-      if (row.kind === "change") this.applied.set(row.id, { ...choice });
-    }
-    this.renderText();
-  }
-
   private renderSideChoice(message: string, local: ArrayBuffer | null, remote: ArrayBuffer | null): void {
     this.mode = "binary";
     this.binary = null;
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("p", { text: message });
-    const buttons = contentEl.createDiv({ cls: "vault-sync-conflict-buttons" });
+    contentEl.createEl("p", { cls: "vault-sync-merge-summary", text: message });
+    const sides = contentEl.createDiv({ cls: "vault-sync-change-sides vault-sync-file-choice" });
     const choose = (bytes: ArrayBuffer, button: HTMLButtonElement): void => {
       this.binary = bytes;
-      for (const item of Array.from(buttons.querySelectorAll<HTMLButtonElement>("button"))) item.removeClass("is-on");
+      for (const item of Array.from(sides.querySelectorAll<HTMLButtonElement>("button"))) item.removeClass("is-on");
       button.addClass("is-on");
       const save = contentEl.querySelector<HTMLButtonElement>(".vault-sync-binary-save");
       if (save) save.disabled = false;
     };
     if (local) {
-      const keep = buttons.createEl("button", { text: "Keep this device" });
+      const side = sides.createDiv({ cls: "vault-sync-side is-local" });
+      side.createDiv({ cls: "vault-sync-side-label", text: "This device" });
+      side.createDiv({ cls: "vault-sync-side-empty", text: "Keep the copy stored on this device." });
+      const keep = side.createEl("button", { text: "Keep this device" });
       keep.onclick = () => choose(local, keep);
     }
     if (remote) {
-      const keep = buttons.createEl("button", { text: "Keep Dropbox" });
+      const side = sides.createDiv({ cls: "vault-sync-side is-remote" });
+      side.createDiv({ cls: "vault-sync-side-label", text: "Dropbox" });
+      side.createDiv({ cls: "vault-sync-side-empty", text: "Keep the copy stored in Dropbox." });
+      const keep = side.createEl("button", { text: "Keep Dropbox" });
       keep.onclick = () => choose(remote, keep);
     }
-    const saveRow = contentEl.createDiv({ cls: "modal-button-container" });
-    const save = saveRow.createEl("button", { cls: "mod-cta vault-sync-binary-save", text: "Apply" });
+    const footer = contentEl.createDiv({ cls: "vault-sync-merge-footer" });
+    const apply = footer.createDiv({ cls: "vault-sync-merge-nav" });
+    const save = apply.createEl("button", { cls: "mod-cta vault-sync-binary-save", text: "Apply" });
     save.disabled = true;
     save.onclick = () => {
       void this.save();
     };
-    const abort = saveRow.createEl("button", { text: "Abort" });
-    abort.onclick = () => this.close();
+    const cancel = apply.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
   }
 
   private save = async (): Promise<void> => {
@@ -378,13 +498,4 @@ export class ConflictResolveModal extends Modal {
       new Notice(errorMessage(error));
     }
   };
-}
-
-function lineNumbers(lines: MergeLine[]): Array<{ left: number | null; right: number | null }> {
-  let left = 0;
-  let right = 0;
-  return lines.map((line) => ({
-    left: line.from === "remote" ? null : (left += 1),
-    right: line.from === "local" ? null : (right += 1),
-  }));
 }
