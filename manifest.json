@@ -1,0 +1,9 @@
+{
+  "id": "vault-anovem-sync",
+  "name": "Vault Anovem Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Two-way Dropbox sync for notes and attachments, plus a vault archive.",
+  "author": "anovem",
+  "isDesktopOnly": false
+}

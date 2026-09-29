@@ -1,0 +1,20 @@
+.vault-sync-conflict {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 12px 0;
+}
+
+.vault-sync-conflict-path {
+  font-weight: var(--font-semibold);
+  overflow-wrap: anywhere;
+}
+
+.vault-sync-conflict-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.vault-sync-progress-line {
+  margin-bottom: 12px;
+}
