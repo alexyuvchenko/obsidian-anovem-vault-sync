@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const root = new URL("..", import.meta.url);
+const rootDir = fileURLToPath(root);
 
 export function checkVersions({ tag, manifestVersion, packageVersion, minAppVersion, versions }) {
   const problems = [];
@@ -53,6 +55,22 @@ function writeVersion(next) {
   writeFileSync(lockUrl, replaceLockVersion(lock, next));
 }
 
+const versionedFiles = ["manifest.json", "package.json", "package-lock.json", "versions.json"];
+
+function git(args) {
+  execFileSync("git", args, { cwd: rootDir, stdio: "inherit" });
+}
+
+function releaseVersion(next) {
+  writeVersion(next);
+  const tag = `v${next}`;
+  git(["add", ...versionedFiles]);
+  git(["commit", "-m", `Bump version to ${next}`]);
+  git(["tag", "-a", tag, "-m", `Release version ${next}`]);
+  git(["push", "origin", tag]);
+  console.log(`Committed, tagged, and pushed ${tag}.`);
+}
+
 export function replaceLockVersion(lock, next) {
   const parsed = JSON.parse(lock);
   const rootVersion = parsed.version;
@@ -91,6 +109,5 @@ if (!invoked) {
   }
   console.log(`${tag} matches manifest.json, package.json, and versions.json`);
 } else {
-  writeVersion(arg);
-  console.log(`Version set to ${arg}. Tag the commit v${arg}.`);
+  releaseVersion(arg);
 }

@@ -22,7 +22,7 @@ To install into a vault that does not have the plugin yet:
 node scripts/version.mjs 0.2.0
 ```
 
-Commit that, then tag the same commit `v0.2.0`. The release workflow rejects any other tag. `npm run version:check` checks the files without a tag.
+That updates `manifest.json`, `package.json`, `versions.json`, and `package-lock.json`, then stages them, commits `Bump version to 0.2.0`, tags the commit `v0.2.0`, and pushes the tag to `origin`. The release workflow rejects any other tag. `npm run version:check` checks the files without a tag.
 
 Reload Obsidian. Turn off Restricted mode and enable **Vault Anovem Sync**.
 
