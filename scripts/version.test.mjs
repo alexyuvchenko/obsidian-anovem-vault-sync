@@ -21,11 +21,11 @@ test("versions.json must list the same version", () => {
 
 test("the lockfile version updates from whatever it currently says", () => {
   const lock = `{
-  "name": "vault-anovem-sync",
+  "name": "anovem-vault-sync",
   "version": "0.1.0",
   "packages": {
     "": {
-      "name": "vault-anovem-sync",
+      "name": "anovem-vault-sync",
       "version": "0.1.0",
       "license": "MIT"
     }

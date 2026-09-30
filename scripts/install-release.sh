@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Install or update Vault Anovem Sync from the latest GitHub release.
+# Install or update Anovem Vault Sync from the latest GitHub release.
 # Usage: ./scripts/install-release.sh /path/to/vault
 
 set -euo pipefail
@@ -15,9 +15,9 @@ if [[ ! -d "$vault/.obsidian" ]]; then
   exit 1
 fi
 
-dest="$vault/.obsidian/plugins/vault-anovem-sync"
+dest="$vault/.obsidian/plugins/anovem-vault-sync"
 mkdir -p "$dest"
-api="https://api.github.com/repos/alexyuvchenko/obsidian-vault-anovem-sync/releases/latest"
+api="https://api.github.com/repos/alexyuvchenko/obsidian-anovem-vault-sync/releases/latest"
 json=$(curl -fsSL -H "Accept: application/vnd.github+json" "$api")
 
 python3 - "$dest" "$json" <<'PY'
@@ -35,4 +35,4 @@ for name in sorted(wanted):
 print(release.get("tag_name", ""))
 PY
 
-echo "Reload Obsidian and enable Vault Anovem Sync."
+echo "Reload Obsidian and enable Anovem Vault Sync."

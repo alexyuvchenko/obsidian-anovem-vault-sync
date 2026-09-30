@@ -1,5 +1,5 @@
 {
-  "name": "vault-anovem-sync",
+  "name": "anovem-vault-sync",
   "version": "0.9.0",
   "description": "Two-way sync of Markdown notes and an attachments folder through Dropbox.",
   "main": "main.js",

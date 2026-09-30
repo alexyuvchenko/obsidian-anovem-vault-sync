@@ -1,4 +1,4 @@
-# Vault Anovem Sync
+# Anovem Vault Sync
 
 Obsidian plugin for Mac and iPhone. It syncs Markdown notes, one attachments folder, and CSS snippets both ways through Dropbox, and it can archive the whole vault to a timestamped file.
 
@@ -8,7 +8,7 @@ Requires Obsidian 1.5.0 or newer.
 
 ## Install
 
-From a vault that already has the plugin, open settings and click **Install or update**, or run **Install or update plugin from GitHub**. That downloads `manifest.json`, `main.js`, and `styles.css` from the latest [GitHub release](https://github.com/alexyuvchenko/obsidian-vault-anovem-sync/releases), writes them into this vault, and reloads the plugin. Obsidian stays open.
+From a vault that already has the plugin, open settings and click **Install or update**, or run **Install or update plugin from GitHub**. That downloads `manifest.json`, `main.js`, and `styles.css` from the latest [GitHub release](https://github.com/alexyuvchenko/obsidian-anovem-vault-sync/releases), writes them into this vault, and reloads the plugin. Obsidian stays open.
 
 To install into a vault that does not have the plugin yet:
 
@@ -24,7 +24,7 @@ node scripts/version.mjs 0.2.0
 
 That updates `manifest.json`, `package.json`, `versions.json`, and `package-lock.json`, then stages them, commits `Bump version to 0.2.0`, tags the commit `v0.2.0`, and pushes the tag to `origin`. The release workflow rejects any other tag. `npm run version:check` checks the files without a tag.
 
-Reload Obsidian. Turn off Restricted mode and enable **Vault Anovem Sync**.
+Reload Obsidian. Turn off Restricted mode and enable **Anovem Vault Sync**.
 
 ## Connect Dropbox
 

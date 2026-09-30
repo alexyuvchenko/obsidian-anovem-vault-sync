@@ -1,6 +1,6 @@
-# Vault Anovem Sync
+# Anovem Vault Sync
 
-Obsidian plugin (`vault-anovem-sync`) for Mac and iPhone. It syncs Markdown notes, one attachments folder, and CSS snippets both ways through Dropbox, and it can archive the whole vault to a timestamped file.
+Obsidian plugin (`anovem-vault-sync`) for Mac and iPhone. It syncs Markdown notes, one attachments folder, and CSS snippets both ways through Dropbox, and it can archive the whole vault to a timestamped file.
 
 The Mac vault can stay on Google Drive. The iPhone vault can stay on iCloud. The plugin reads the open vault and copies files through Dropbox. It does not read the other device's drive. Requires Obsidian 1.5.0 or newer (`isDesktopOnly` is false).
 
@@ -18,7 +18,7 @@ npm test
 - `npm test` bundles `src/*.test.ts` with esbuild and runs them under `node --test`. Output goes to `dist-test/`.
 - `./scripts/build.sh` runs `npm run build`: `tsc -noEmit` then a production esbuild bundle to `main.js`.
 - `npm run dev` watches and writes `main.js` with an inline sourcemap.
-- `./scripts/install-release.sh` downloads `manifest.json`, `main.js`, and `styles.css` from the latest GitHub release into `.obsidian/plugins/vault-anovem-sync/` in the vault you pass.
+- `./scripts/install-release.sh` downloads `manifest.json`, `main.js`, and `styles.css` from the latest GitHub release into `.obsidian/plugins/anovem-vault-sync/` in the vault you pass.
 
 Plugin files Obsidian loads live at the repo root: `manifest.json`, `main.js`, `styles.css`. `main.js` is generated.
 

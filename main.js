@@ -2471,7 +2471,7 @@ var ConflictResolveModal = class extends import_obsidian3.Modal {
 };
 
 // src/release.ts
-var RELEASE_REPO = "alexyuvchenko/obsidian-vault-anovem-sync";
+var RELEASE_REPO = "alexyuvchenko/obsidian-anovem-vault-sync";
 var PLUGIN_FILES = ["manifest.json", "main.js", "styles.css"];
 function compareVersions(left, right) {
   var _a2, _b2;
@@ -2794,7 +2794,7 @@ var SyncEngine = class {
       let items = [];
       const previous = new Map(this.state.conflicts.map((conflict) => [pathKey(conflict.path), conflict]));
       try {
-        if (!this.settings.refreshToken) throw new Error("Connect Dropbox in Vault Anovem Sync settings.");
+        if (!this.settings.refreshToken) throw new Error("Connect Dropbox in Anovem Vault Sync settings.");
         const root = normalizeDropboxFolder(this.settings.dropboxFolder);
         const folder = syncVaultFolder(root, this.app.vault.getName());
         const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
@@ -3215,7 +3215,7 @@ var SyncEngine = class {
       return local.hash;
     };
     this.baseFolder = () => {
-      return (0, import_obsidian5.normalizePath)(`${this.app.vault.configDir}/plugins/vault-anovem-sync/bases`);
+      return (0, import_obsidian5.normalizePath)(`${this.app.vault.configDir}/plugins/anovem-vault-sync/bases`);
     };
     this.baseFile = async (relativePath) => {
       const encoded = new TextEncoder().encode(pathKey(relativePath));
@@ -3434,7 +3434,7 @@ async function configuredAttachmentFolder(app) {
 }
 
 // src/main.ts
-var SYNC_ICON = "vault-anovem-sync";
+var SYNC_ICON = "anovem-vault-sync";
 (0, import_obsidian6.addIcon)(
   SYNC_ICON,
   `<g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 50h64"/><path d="M18 50 32 36"/><path d="M18 50 32 64"/><path d="M82 50 68 36"/><path d="M82 50 68 64"/></g>`
@@ -3549,7 +3549,7 @@ var VaultSyncPlugin = class extends import_obsidian6.Plugin {
         });
         const plan = parseLatestRelease(listed.json, this.manifest.version);
         if (!plan) {
-          new import_obsidian6.Notice(`Vault Anovem Sync ${this.manifest.version} is current.`);
+          new import_obsidian6.Notice(`Anovem Vault Sync ${this.manifest.version} is current.`);
           return;
         }
         const dir = this.manifest.dir;

@@ -11,7 +11,7 @@ import { summarize, SyncEngine } from "./sync";
 import { DEFAULT_SETTINGS, emptyState, type PluginData, type Settings, type SyncState } from "./types";
 import { configuredAttachmentFolder } from "./vault-config";
 
-const SYNC_ICON = "vault-anovem-sync";
+const SYNC_ICON = "anovem-vault-sync";
 
 addIcon(
   SYNC_ICON,
@@ -252,7 +252,7 @@ export default class VaultSyncPlugin extends Plugin {
       });
       const plan = parseLatestRelease(listed.json, this.manifest.version);
       if (!plan) {
-        new Notice(`Vault Anovem Sync ${this.manifest.version} is current.`);
+        new Notice(`Anovem Vault Sync ${this.manifest.version} is current.`);
         return;
       }
       const dir = this.manifest.dir;

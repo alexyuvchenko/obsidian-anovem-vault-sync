@@ -1,4 +1,4 @@
-export const RELEASE_REPO = "alexyuvchenko/obsidian-vault-anovem-sync";
+export const RELEASE_REPO = "alexyuvchenko/obsidian-anovem-vault-sync";
 
 export const PLUGIN_FILES = ["manifest.json", "main.js", "styles.css"] as const;
 

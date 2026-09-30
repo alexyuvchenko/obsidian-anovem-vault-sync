@@ -119,7 +119,7 @@ export class SyncEngine {
     let items: Item[] = [];
     const previous = new Map(this.state.conflicts.map((conflict) => [pathKey(conflict.path), conflict]));
     try {
-      if (!this.settings.refreshToken) throw new Error("Connect Dropbox in Vault Anovem Sync settings.");
+      if (!this.settings.refreshToken) throw new Error("Connect Dropbox in Anovem Vault Sync settings.");
       const root = normalizeDropboxFolder(this.settings.dropboxFolder);
       const folder = syncVaultFolder(root, this.app.vault.getName());
       const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
@@ -583,7 +583,7 @@ export class SyncEngine {
   };
 
   private baseFolder = (): string => {
-    return normalizePath(`${this.app.vault.configDir}/plugins/vault-anovem-sync/bases`);
+    return normalizePath(`${this.app.vault.configDir}/plugins/anovem-vault-sync/bases`);
   };
 
   private baseFile = async (relativePath: string): Promise<string> => {

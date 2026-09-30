@@ -79,9 +79,9 @@ export function replaceLockVersion(lock, next) {
     throw new Error("package-lock.json has no root version.");
   }
   const updated = lock
-    .replace(`"name": "vault-anovem-sync",\n  "version": "${rootVersion}"`, `"name": "vault-anovem-sync",\n  "version": "${next}"`)
-    .replace(`"name": "vault-anovem-sync",\n      "version": "${packageVersion}"`, `"name": "vault-anovem-sync",\n      "version": "${next}"`);
-  if (!updated.includes(`"name": "vault-anovem-sync",\n  "version": "${next}"`) || !updated.includes(`"name": "vault-anovem-sync",\n      "version": "${next}"`)) {
+    .replace(`"name": "anovem-vault-sync",\n  "version": "${rootVersion}"`, `"name": "anovem-vault-sync",\n  "version": "${next}"`)
+    .replace(`"name": "anovem-vault-sync",\n      "version": "${packageVersion}"`, `"name": "anovem-vault-sync",\n      "version": "${next}"`);
+  if (!updated.includes(`"name": "anovem-vault-sync",\n  "version": "${next}"`) || !updated.includes(`"name": "anovem-vault-sync",\n      "version": "${next}"`)) {
     throw new Error("package-lock.json version was not updated.");
   }
   return updated;
