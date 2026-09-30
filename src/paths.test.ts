@@ -45,6 +45,16 @@ test("scope is markdown plus the attachments folder", () => {
   assert.equal(isIncluded("attachments/.DS_Store", "attachments"), false);
 });
 
+test("scope includes CSS snippets under .obsidian/snippets", () => {
+  assert.equal(isIncluded(".obsidian/snippets/wide.css", "attachments"), true);
+  assert.equal(isIncluded(".Obsidian/Snippets/theme.css", "attachments"), true);
+  assert.equal(isIncluded(".obsidian/snippets/sub/extra.css", "attachments"), true);
+  assert.equal(isIncluded(".obsidian/snippets/.hidden.css", "attachments"), false);
+  assert.equal(isIncluded(".obsidian/snippets", "attachments"), false);
+  assert.equal(isIncluded(".obsidian/community-plugins.json", "attachments"), false);
+  assert.equal(isIncluded(".obsidian/plugins/foo/main.js", "attachments"), false);
+});
+
 test("attachments folder must be inside the vault", () => {
   assert.equal(normalizeAttachmentsFolder("attachments"), "attachments");
   assert.equal(normalizeAttachmentsFolder("./meta/attachments/"), "meta/attachments");

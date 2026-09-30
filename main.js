@@ -1300,17 +1300,38 @@ function normalizeAttachmentsFolder(input) {
   }
   return parts.join("/");
 }
-function isIncluded(relativePath, attachmentsFolder) {
+function snippetFolder(configDir = ".obsidian") {
+  return `${normalizeRelative(configDir)}/snippets`;
+}
+function isSnippetPath(relativePath, configDir = ".obsidian") {
+  return isUnderFolder(relativePath, snippetFolder(configDir));
+}
+function isIncluded(relativePath, attachmentsFolder, configDir = ".obsidian") {
   const path = normalizeRelative(relativePath);
   if (!path) return false;
   const parts = path.split("/");
-  if (parts.some((part) => part.length === 0 || part.startsWith(".") || part === "..")) return false;
+  if (parts.some((part) => part.length === 0 || part === "..")) return false;
+  if (isSnippetPath(path, configDir)) {
+    return visibleDescendant(path, snippetFolder(configDir));
+  }
+  if (parts.some((part) => part.startsWith("."))) return false;
   if (path.toLowerCase().endsWith(".md")) return true;
   const folder = normalizeRelative(attachmentsFolder);
   if (!folder || folder === "." || folder.split("/").some((part) => part === "." || part === "..")) {
     return false;
   }
   return path.toLowerCase().startsWith(`${folder.toLowerCase()}/`);
+}
+function isUnderFolder(relativePath, folder) {
+  const path = normalizeRelative(relativePath).toLowerCase();
+  const prefix = `${normalizeRelative(folder).toLowerCase()}/`;
+  return path.startsWith(prefix) && path.length > prefix.length;
+}
+function visibleDescendant(relativePath, folder) {
+  const path = normalizeRelative(relativePath);
+  const prefix = `${normalizeRelative(folder)}/`;
+  const rest = path.slice(prefix.length);
+  return rest.split("/").every((part) => part.length > 0 && !part.startsWith(".") && part !== "..");
 }
 function headerJson(value) {
   return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (ch) => {
@@ -2507,7 +2528,7 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("p", {
-      text: "Syncs Markdown notes and one attachments folder through Dropbox. Install this plugin in the vault on the Mac and on the iPhone. Both devices use the same Dropbox folder and the same attachments path."
+      text: "Syncs Markdown notes, one attachments folder, and CSS snippets in .obsidian/snippets through Dropbox. Install this plugin in the vault on the Mac and on the iPhone. Both devices use the same Dropbox folder and the same attachments path."
     });
     containerEl.createEl("p", {
       text: "The Mac vault can stay on Google Drive. The iPhone vault can stay on iCloud. This plugin reads the open vault and copies those files through Dropbox."
@@ -2535,7 +2556,7 @@ var VaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.persist();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Attachments folder").setDesc("Folder inside the vault. Markdown notes anywhere in the vault are included. Other files are included only from this folder. Use the same path, including capital letters, on every device.").addText((text) => {
+    new import_obsidian4.Setting(containerEl).setName("Attachments folder").setDesc("Folder inside the vault. Markdown notes anywhere in the vault are included. CSS snippets under .obsidian/snippets are included. Other files are included only from this folder. Use the same path, including capital letters, on every device.").addText((text) => {
       text.setPlaceholder("attachments").setValue(this.plugin.settings.attachmentsFolder);
       text.onChange(async (value) => {
         this.plugin.settings.attachmentsFolder = value.trim();
@@ -2743,7 +2764,7 @@ var SyncEngine = class {
     this.readConflictBytes = async (relativePath) => {
       const normalized = (0, import_obsidian5.normalizePath)(relativePath);
       const file = this.app.vault.getAbstractFileByPath(normalized);
-      const local = file instanceof import_obsidian5.TFile ? await this.app.vault.readBinary(file) : null;
+      const local = file instanceof import_obsidian5.TFile ? await this.app.vault.readBinary(file) : await readAdapterIfPresent(this.app.vault, normalized);
       const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
       const meta = await this.client.metadata(toDropboxPath(folder, normalized));
       if (!meta) return { local, remote: null };
@@ -2777,6 +2798,7 @@ var SyncEngine = class {
         const root = normalizeDropboxFolder(this.settings.dropboxFolder);
         const folder = syncVaultFolder(root, this.app.vault.getName());
         const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
+        const configDir = this.app.vault.configDir;
         this.settings.dropboxFolder = root;
         this.settings.attachmentsFolder = attachments;
         this.mergeMode = this.settings.conflictMode === "merge";
@@ -2785,7 +2807,7 @@ var SyncEngine = class {
         await yieldToUi2();
         const remote = await this.client.listFiles(folder);
         listed = true;
-        items = this.collect(attachments, remote.files);
+        items = await this.collect(attachments, configDir, remote.files);
         await this.indexRenames(items, ui);
         let index = 0;
         for (const item of items) {
@@ -2836,7 +2858,7 @@ var SyncEngine = class {
         if (write) await this.persist();
       }
     };
-    this.collect = (attachments, remoteFiles) => {
+    this.collect = async (attachments, configDir, remoteFiles) => {
       const map = /* @__PURE__ */ new Map();
       const slot = (relativePath) => {
         const key = pathKey(relativePath);
@@ -2848,12 +2870,17 @@ var SyncEngine = class {
         return item;
       };
       for (const file of this.app.vault.getFiles()) {
-        if (!isIncluded(file.path, attachments)) continue;
-        slot(file.path).local = file;
+        if (!isIncluded(file.path, attachments, configDir)) continue;
+        slot(file.path).local = vaultLocalFromFile(file);
+      }
+      for (const listed of await listSnippetFiles(this.app.vault, configDir)) {
+        if (!isIncluded(listed.path, attachments, configDir)) continue;
+        const item = slot(listed.path);
+        if (!item.local) item.local = listed;
       }
       this.remotes.clear();
       for (const remote of remoteFiles) {
-        if (!isIncluded(remote.relativePath, attachments)) continue;
+        if (!isIncluded(remote.relativePath, attachments, configDir)) continue;
         slot(remote.relativePath).remote = remote;
         this.remotes.set(pathKey(remote.relativePath), remote);
       }
@@ -2866,7 +2893,7 @@ var SyncEngine = class {
     };
     this.apply = async (item, folder, existing, write) => {
       var _a2, _b2;
-      const local = await inspectLocal(item.local, item.record);
+      const local = await inspectLocal(this.app.vault, item.local, item.record);
       const localHash = item.local ? local.hash : null;
       const remoteRev = (_b2 = (_a2 = item.remote) == null ? void 0 : _a2.rev) != null ? _b2 : null;
       const classified = hasSnapshot(existing) ? await this.classifyManual(item, existing, local, localHash, remoteRev) : await this.classifyFresh(item, local, localHash, remoteRev);
@@ -2959,7 +2986,7 @@ var SyncEngine = class {
           }
         };
       }
-      const localBytes = (_b2 = local.bytes) != null ? _b2 : await this.app.vault.readBinary(item.local);
+      const localBytes = (_b2 = local.bytes) != null ? _b2 : await readLocalBytes(this.app.vault, item.local);
       const localText = decodeUtf8(localBytes);
       const remoteText = decodeUtf8(downloaded.bytes);
       const baseBytes = await this.readBase((_c = item.recordPath) != null ? _c : item.local.path);
@@ -2979,8 +3006,8 @@ var SyncEngine = class {
       if (classified.type === "backfill") {
         try {
           if (!await this.readBase(classified.path)) {
-            const file = this.app.vault.getAbstractFileByPath((0, import_obsidian5.normalizePath)(classified.path));
-            if (file instanceof import_obsidian5.TFile) await this.saveBase(classified.path, await this.app.vault.readBinary(file));
+            const bytes = await readPathBytes(this.app.vault, classified.path);
+            if (bytes) await this.saveBase(classified.path, bytes);
           }
         } catch (e) {
         }
@@ -3015,13 +3042,13 @@ var SyncEngine = class {
         size: local.size,
         mtime: local.mtime,
         dropboxRev: moved.rev
-      }, classified.fromPath, (_a2 = local.bytes) != null ? _a2 : await this.app.vault.readBinary(item.local));
+      }, classified.fromPath, (_a2 = local.bytes) != null ? _a2 : await readLocalBytes(this.app.vault, item.local));
       await this.removeBase(classified.fromPath);
       return { type: "rename", fromPath: classified.fromPath, fromKey: classified.fromKey, record: classified.record };
     };
     this.trashLocal = async (item) => {
       if (!item.local) return { type: "none" };
-      await trashVaultFile(this.app, item.local);
+      await trashLocalFile(this.app, item.local);
       this.deleteRecord(item.key);
       return { type: "trash-local" };
     };
@@ -3053,7 +3080,7 @@ var SyncEngine = class {
     this.uploadLocal = async (item, folder, local, localHash, remoteRev) => {
       var _a2, _b2, _c, _d;
       if (!item.local) return conflictOutcome(localHash, remoteRev);
-      const bytes = (_a2 = local.bytes) != null ? _a2 : await this.app.vault.readBinary(item.local);
+      const bytes = (_a2 = local.bytes) != null ? _a2 : await readLocalBytes(this.app.vault, item.local);
       const apiPath = (_c = (_b2 = item.remote) == null ? void 0 : _b2.dropboxPath) != null ? _c : toDropboxPath(folder, item.local.path);
       const mode = item.remote ? { update: item.remote.rev } : "add";
       const uploaded = await this.client.upload(apiPath, bytes, mode);
@@ -3066,7 +3093,7 @@ var SyncEngine = class {
             await this.agree(item.local.path, {
               hash,
               size: bytes.byteLength,
-              mtime: stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
+              mtime: await stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
               dropboxRev: downloaded.rev
             }, item.recordPath, bytes);
             return { type: "none" };
@@ -3079,7 +3106,7 @@ var SyncEngine = class {
       await this.agree(item.local.path, {
         hash,
         size: bytes.byteLength,
-        mtime: stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
+        mtime: await stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
         dropboxRev: uploaded.rev
       }, item.recordPath, bytes);
       return { type: "upload" };
@@ -3169,7 +3196,7 @@ var SyncEngine = class {
       for (const item of items) {
         if (ui.cancelled()) return;
         if (!item.local || item.record || item.remote) continue;
-        const local = await inspectLocal(item.local, void 0);
+        const local = await inspectLocal(this.app.vault, item.local, void 0);
         const matches = orphans.filter((orphan) => {
           var _a3;
           return !used.has(orphan.key) && ((_a3 = orphan.record) == null ? void 0 : _a3.hash) === local.hash;
@@ -3184,7 +3211,7 @@ var SyncEngine = class {
     };
     this.localHash = async (item) => {
       if (!item.local) return null;
-      const local = await inspectLocal(item.local, item.record);
+      const local = await inspectLocal(this.app.vault, item.local, item.record);
       return local.hash;
     };
     this.baseFolder = () => {
@@ -3217,14 +3244,67 @@ var SyncEngine = class {
     };
   }
 };
-async function inspectLocal(file, record) {
+function vaultLocalFromFile(file) {
+  return { path: file.path, mtime: file.stat.mtime, size: file.stat.size, file };
+}
+async function listSnippetFiles(vault, configDir) {
+  const files = [];
+  await walkSnippetFolder(vault, snippetFolder(configDir), files);
+  return files;
+}
+async function walkSnippetFolder(vault, folder, files) {
+  var _a2, _b2, _c, _d;
+  let listed;
+  try {
+    if (!await vault.adapter.exists(folder)) return;
+    listed = await vault.adapter.list(folder);
+  } catch (e) {
+    return;
+  }
+  for (const child of listed.folders) {
+    const name = (_a2 = child.split("/").pop()) != null ? _a2 : "";
+    if (!name || name.startsWith(".")) continue;
+    await walkSnippetFolder(vault, child, files);
+  }
+  for (const path of listed.files) {
+    const name = (_b2 = path.split("/").pop()) != null ? _b2 : "";
+    if (!name || name.startsWith(".")) continue;
+    const stat = await vault.adapter.stat(path);
+    if (!stat || stat.type === "folder") continue;
+    files.push({ path, mtime: (_c = stat.mtime) != null ? _c : 0, size: (_d = stat.size) != null ? _d : 0 });
+  }
+}
+async function readLocalBytes(vault, local) {
+  if (local.file) return vault.readBinary(local.file);
+  return vault.adapter.readBinary(local.path);
+}
+async function readPathBytes(vault, path) {
+  const normalized = (0, import_obsidian5.normalizePath)(path);
+  const file = vault.getAbstractFileByPath(normalized);
+  if (file instanceof import_obsidian5.TFile) return vault.readBinary(file);
+  return readAdapterIfPresent(vault, normalized);
+}
+async function readAdapterIfPresent(vault, path) {
+  if (!await vault.adapter.exists(path)) return null;
+  const stat = await vault.adapter.stat(path);
+  if (!stat || stat.type === "folder") return null;
+  return vault.adapter.readBinary(path);
+}
+async function inspectLocal(vault, file, record) {
+  var _a2, _b2, _c, _d;
   if (!file) return { presence: "absent", hash: "", mtime: 0, size: 0 };
-  const mtime = file.stat.mtime;
-  const size = file.stat.size;
+  let mtime = (_b2 = (_a2 = file.file) == null ? void 0 : _a2.stat.mtime) != null ? _b2 : file.mtime;
+  let size = (_d = (_c = file.file) == null ? void 0 : _c.stat.size) != null ? _d : file.size;
+  if (!file.file) {
+    const stat = await vault.adapter.stat(file.path);
+    if (!stat || stat.type === "folder") return { presence: "absent", hash: "", mtime: 0, size: 0 };
+    mtime = stat.mtime;
+    size = stat.size;
+  }
   if (record && record.mtime !== 0 && record.mtime === mtime && record.size === size) {
     return { presence: "unchanged", hash: record.hash, mtime, size };
   }
-  const bytes = await file.vault.readBinary(file);
+  const bytes = await readLocalBytes(vault, file);
   const hash = await sha256Hex(bytes);
   if (!record) return { presence: "untracked", hash, bytes, mtime, size };
   if (hash === record.hash) {
@@ -3234,13 +3314,23 @@ async function inspectLocal(file, record) {
   }
   return { presence: "changed", hash, bytes, mtime, size };
 }
-function stableMtime(app, path, mtime, size) {
-  const after = app.vault.getAbstractFileByPath((0, import_obsidian5.normalizePath)(path));
+async function stableMtime(app, path, mtime, size) {
+  const normalized = (0, import_obsidian5.normalizePath)(path);
+  const after = app.vault.getAbstractFileByPath(normalized);
   if (after instanceof import_obsidian5.TFile && after.stat.mtime === mtime && after.stat.size === size) return mtime;
+  if (isSnippetPath(normalized, app.vault.configDir) || isSnippetPath(normalized)) {
+    const stat = await app.vault.adapter.stat(normalized);
+    if (stat && stat.mtime === mtime && stat.size === size) return mtime;
+  }
   return 0;
 }
 async function writeLocal(vault, path, bytes) {
   const normalized = (0, import_obsidian5.normalizePath)(path);
+  if (isSnippetPath(normalized, vault.configDir) || isSnippetPath(normalized)) {
+    await ensureAdapterFolder(vault, normalized);
+    await vault.adapter.writeBinary(normalized, bytes);
+    return;
+  }
   const existing = vault.getAbstractFileByPath(normalized);
   if (existing instanceof import_obsidian5.TFile) {
     await vault.modifyBinary(existing, bytes);
@@ -3249,6 +3339,17 @@ async function writeLocal(vault, path, bytes) {
   if (existing) throw new Error(`${normalized} is not a file.`);
   await ensureFolder2(vault, normalized);
   await vault.createBinary(normalized, bytes);
+}
+async function ensureAdapterFolder(vault, filePath) {
+  const slash = filePath.lastIndexOf("/");
+  if (slash <= 0) return;
+  const parts = filePath.slice(0, slash).split("/");
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (await vault.adapter.exists(current)) continue;
+    await vault.adapter.mkdir(current);
+  }
 }
 async function ensureFolder2(vault, filePath) {
   const slash = filePath.lastIndexOf("/");
@@ -3277,6 +3378,13 @@ function hasSnapshot(conflict) {
 function conflictOutcome(localHash, remoteRev) {
   const kind = localHash === null ? "deleted-local" : remoteRev === null ? "deleted-remote" : "both-changed";
   return { type: "conflict", kind, localHash, remoteRev };
+}
+async function trashLocalFile(app, local) {
+  if (local.file) {
+    await trashVaultFile(app, local.file);
+    return;
+  }
+  if (await app.vault.adapter.exists(local.path)) await app.vault.adapter.remove(local.path);
 }
 async function trashVaultFile(app, file) {
   const manager = app.fileManager;

@@ -14,7 +14,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("p", {
-      text: "Syncs Markdown notes and one attachments folder through Dropbox. Install this plugin in the vault on the Mac and on the iPhone. Both devices use the same Dropbox folder and the same attachments path.",
+      text: "Syncs Markdown notes, one attachments folder, and CSS snippets in .obsidian/snippets through Dropbox. Install this plugin in the vault on the Mac and on the iPhone. Both devices use the same Dropbox folder and the same attachments path.",
     });
     containerEl.createEl("p", {
       text: "The Mac vault can stay on Google Drive. The iPhone vault can stay on iCloud. This plugin reads the open vault and copies those files through Dropbox.",
@@ -57,7 +57,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Attachments folder")
-      .setDesc("Folder inside the vault. Markdown notes anywhere in the vault are included. Other files are included only from this folder. Use the same path, including capital letters, on every device.")
+      .setDesc("Folder inside the vault. Markdown notes anywhere in the vault are included. CSS snippets under .obsidian/snippets are included. Other files are included only from this folder. Use the same path, including capital letters, on every device.")
       .addText((text) => {
         text.setPlaceholder("attachments").setValue(this.plugin.settings.attachmentsFolder);
         text.onChange(async (value) => {

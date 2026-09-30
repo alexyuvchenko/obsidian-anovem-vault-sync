@@ -59,17 +59,42 @@ export function normalizeAttachmentsFolder(input: string): string {
   return parts.join("/");
 }
 
-export function isIncluded(relativePath: string, attachmentsFolder: string): boolean {
+export function snippetFolder(configDir = ".obsidian"): string {
+  return `${normalizeRelative(configDir)}/snippets`;
+}
+
+export function isSnippetPath(relativePath: string, configDir = ".obsidian"): boolean {
+  return isUnderFolder(relativePath, snippetFolder(configDir));
+}
+
+export function isIncluded(relativePath: string, attachmentsFolder: string, configDir = ".obsidian"): boolean {
   const path = normalizeRelative(relativePath);
   if (!path) return false;
   const parts = path.split("/");
-  if (parts.some((part) => part.length === 0 || part.startsWith(".") || part === "..")) return false;
+  if (parts.some((part) => part.length === 0 || part === "..")) return false;
+  if (isSnippetPath(path, configDir)) {
+    return visibleDescendant(path, snippetFolder(configDir));
+  }
+  if (parts.some((part) => part.startsWith("."))) return false;
   if (path.toLowerCase().endsWith(".md")) return true;
   const folder = normalizeRelative(attachmentsFolder);
   if (!folder || folder === "." || folder.split("/").some((part) => part === "." || part === "..")) {
     return false;
   }
   return path.toLowerCase().startsWith(`${folder.toLowerCase()}/`);
+}
+
+function isUnderFolder(relativePath: string, folder: string): boolean {
+  const path = normalizeRelative(relativePath).toLowerCase();
+  const prefix = `${normalizeRelative(folder).toLowerCase()}/`;
+  return path.startsWith(prefix) && path.length > prefix.length;
+}
+
+function visibleDescendant(relativePath: string, folder: string): boolean {
+  const path = normalizeRelative(relativePath);
+  const prefix = `${normalizeRelative(folder)}/`;
+  const rest = path.slice(prefix.length);
+  return rest.split("/").every((part) => part.length > 0 && !part.startsWith(".") && part !== "..");
 }
 
 export function headerJson(value: unknown): string {

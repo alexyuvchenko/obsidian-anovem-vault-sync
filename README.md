@@ -1,6 +1,6 @@
 # Vault Anovem Sync
 
-Obsidian plugin for Mac and iPhone. It syncs Markdown notes and one attachments folder both ways through Dropbox, and it can archive the whole vault to a timestamped file.
+Obsidian plugin for Mac and iPhone. It syncs Markdown notes, one attachments folder, and CSS snippets both ways through Dropbox, and it can archive the whole vault to a timestamped file.
 
 The Mac vault can stay on Google Drive. The iPhone vault can stay on iCloud. The plugin reads the open vault and copies files through Dropbox. It does not read the other device's drive.
 
@@ -39,7 +39,7 @@ Do this once on the Mac and once on the iPhone. Both devices use the same app ke
 
 ## Sync
 
-Sync includes every Markdown note, plus every file inside the attachments folder. Files whose names start with `.` are left out, including `.obsidian`.
+Sync includes every Markdown note, every file inside the attachments folder, and every file inside `.obsidian/snippets`. Other files whose names start with `.` are left out, including the rest of `.obsidian`.
 
 Background sync is on by default. While Obsidian is open, the vault syncs every 5 minutes and again when you return to the app. You can keep editing. One run uploads notes changed on this device and downloads notes changed in Dropbox. It does not run after Obsidian is closed. Change the interval, or turn it off, under **Background sync** in the plugin settings.
 

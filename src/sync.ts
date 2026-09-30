@@ -2,7 +2,16 @@ import { normalizePath, TFile, type App, type Vault } from "obsidian";
 import { DropboxClient, DropboxError } from "./dropbox";
 import { sha256Hex } from "./hash";
 import { decodeUtf8, mergeWords } from "./merge";
-import { isIncluded, normalizeAttachmentsFolder, normalizeDropboxFolder, pathKey, syncVaultFolder, toDropboxPath } from "./paths";
+import {
+  isIncluded,
+  isSnippetPath,
+  normalizeAttachmentsFolder,
+  normalizeDropboxFolder,
+  pathKey,
+  snippetFolder,
+  syncVaultFolder,
+  toDropboxPath,
+} from "./paths";
 import { planAfterCompare, planManualResolution, planRename, planSync, type Presence } from "./plan";
 import type { ConflictItem, ConflictKind, FileRecord, RemoteFile, Settings, SyncReport, SyncState } from "./types";
 
@@ -11,9 +20,16 @@ export interface SyncUi {
   update: (text: string) => void;
 }
 
+interface VaultLocal {
+  path: string;
+  mtime: number;
+  size: number;
+  file?: TFile;
+}
+
 interface Item {
   key: string;
-  local?: TFile;
+  local?: VaultLocal;
   remote?: RemoteFile;
   record?: FileRecord;
   recordPath?: string;
@@ -67,7 +83,9 @@ export class SyncEngine {
   readConflictBytes = async (relativePath: string): Promise<{ local: ArrayBuffer | null; remote: ArrayBuffer | null }> => {
     const normalized = normalizePath(relativePath);
     const file = this.app.vault.getAbstractFileByPath(normalized);
-    const local = file instanceof TFile ? await this.app.vault.readBinary(file) : null;
+    const local = file instanceof TFile
+      ? await this.app.vault.readBinary(file)
+      : await readAdapterIfPresent(this.app.vault, normalized);
     const folder = syncVaultFolder(normalizeDropboxFolder(this.settings.dropboxFolder), this.app.vault.getName());
     const meta = await this.client.metadata(toDropboxPath(folder, normalized));
     if (!meta) return { local, remote: null };
@@ -105,6 +123,7 @@ export class SyncEngine {
       const root = normalizeDropboxFolder(this.settings.dropboxFolder);
       const folder = syncVaultFolder(root, this.app.vault.getName());
       const attachments = normalizeAttachmentsFolder(this.settings.attachmentsFolder);
+      const configDir = this.app.vault.configDir;
       this.settings.dropboxFolder = root;
       this.settings.attachmentsFolder = attachments;
       this.mergeMode = this.settings.conflictMode === "merge";
@@ -113,7 +132,7 @@ export class SyncEngine {
       await yieldToUi();
       const remote = await this.client.listFiles(folder);
       listed = true;
-      items = this.collect(attachments, remote.files);
+      items = await this.collect(attachments, configDir, remote.files);
       await this.indexRenames(items, ui);
       let index = 0;
       for (const item of items) {
@@ -165,7 +184,7 @@ export class SyncEngine {
     }
   };
 
-  private collect = (attachments: string, remoteFiles: RemoteFile[]): Item[] => {
+  private collect = async (attachments: string, configDir: string, remoteFiles: RemoteFile[]): Promise<Item[]> => {
     const map = new Map<string, Item>();
     const slot = (relativePath: string): Item => {
       const key = pathKey(relativePath);
@@ -177,12 +196,17 @@ export class SyncEngine {
       return item;
     };
     for (const file of this.app.vault.getFiles()) {
-      if (!isIncluded(file.path, attachments)) continue;
-      slot(file.path).local = file;
+      if (!isIncluded(file.path, attachments, configDir)) continue;
+      slot(file.path).local = vaultLocalFromFile(file);
+    }
+    for (const listed of await listSnippetFiles(this.app.vault, configDir)) {
+      if (!isIncluded(listed.path, attachments, configDir)) continue;
+      const item = slot(listed.path);
+      if (!item.local) item.local = listed;
     }
     this.remotes.clear();
     for (const remote of remoteFiles) {
-      if (!isIncluded(remote.relativePath, attachments)) continue;
+      if (!isIncluded(remote.relativePath, attachments, configDir)) continue;
       slot(remote.relativePath).remote = remote;
       this.remotes.set(pathKey(remote.relativePath), remote);
     }
@@ -195,7 +219,7 @@ export class SyncEngine {
   };
 
   private apply = async (item: Item, folder: string, existing: ConflictItem | undefined, write: boolean): Promise<Outcome> => {
-    const local = await inspectLocal(item.local, item.record);
+    const local = await inspectLocal(this.app.vault, item.local, item.record);
     const localHash = item.local ? local.hash : null;
     const remoteRev = item.remote?.rev ?? null;
     const classified = hasSnapshot(existing)
@@ -306,7 +330,7 @@ export class SyncEngine {
         },
       };
     }
-    const localBytes = local.bytes ?? await this.app.vault.readBinary(item.local);
+    const localBytes = local.bytes ?? await readLocalBytes(this.app.vault, item.local);
     const localText = decodeUtf8(localBytes);
     const remoteText = decodeUtf8(downloaded.bytes);
     const baseBytes = await this.readBase(item.recordPath ?? item.local.path);
@@ -326,8 +350,8 @@ export class SyncEngine {
     if (classified.type === "backfill") {
       try {
         if (!(await this.readBase(classified.path))) {
-          const file = this.app.vault.getAbstractFileByPath(normalizePath(classified.path));
-          if (file instanceof TFile) await this.saveBase(classified.path, await this.app.vault.readBinary(file));
+          const bytes = await readPathBytes(this.app.vault, classified.path);
+          if (bytes) await this.saveBase(classified.path, bytes);
         }
       } catch {
         // A missing base falls back to review on the next overlap.
@@ -368,14 +392,14 @@ export class SyncEngine {
       size: local.size,
       mtime: local.mtime,
       dropboxRev: moved.rev,
-    }, classified.fromPath, local.bytes ?? await this.app.vault.readBinary(item.local));
+    }, classified.fromPath, local.bytes ?? await readLocalBytes(this.app.vault, item.local));
     await this.removeBase(classified.fromPath);
     return { type: "rename", fromPath: classified.fromPath, fromKey: classified.fromKey, record: classified.record };
   };
 
   private trashLocal = async (item: Item): Promise<Outcome> => {
     if (!item.local) return { type: "none" };
-    await trashVaultFile(this.app, item.local);
+    await trashLocalFile(this.app, item.local);
     this.deleteRecord(item.key);
     return { type: "trash-local" };
   };
@@ -419,7 +443,7 @@ export class SyncEngine {
     remoteRev: string | null,
   ): Promise<Outcome> => {
     if (!item.local) return conflictOutcome(localHash, remoteRev);
-    const bytes = local.bytes ?? await this.app.vault.readBinary(item.local);
+    const bytes = local.bytes ?? await readLocalBytes(this.app.vault, item.local);
     const apiPath = item.remote?.dropboxPath ?? toDropboxPath(folder, item.local.path);
     const mode = item.remote ? { update: item.remote.rev } : "add" as const;
     const uploaded = await this.client.upload(apiPath, bytes, mode);
@@ -432,7 +456,7 @@ export class SyncEngine {
           await this.agree(item.local.path, {
             hash,
             size: bytes.byteLength,
-            mtime: stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
+            mtime: await stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
             dropboxRev: downloaded.rev,
           }, item.recordPath, bytes);
           return { type: "none" };
@@ -445,7 +469,7 @@ export class SyncEngine {
     await this.agree(item.local.path, {
       hash,
       size: bytes.byteLength,
-      mtime: stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
+      mtime: await stableMtime(this.app, item.local.path, local.mtime, bytes.byteLength),
       dropboxRev: uploaded.rev,
     }, item.recordPath, bytes);
     return { type: "upload" };
@@ -541,7 +565,7 @@ export class SyncEngine {
     for (const item of items) {
       if (ui.cancelled()) return;
       if (!item.local || item.record || item.remote) continue;
-      const local = await inspectLocal(item.local, undefined);
+      const local = await inspectLocal(this.app.vault, item.local, undefined);
       const matches = orphans.filter((orphan) => !used.has(orphan.key) && orphan.record?.hash === local.hash);
       const remote = matches.length === 1 ? this.remotes.get(matches[0].key) : undefined;
       const unchanged = !!remote && remote.rev === matches[0].record?.dropboxRev;
@@ -554,7 +578,7 @@ export class SyncEngine {
 
   private localHash = async (item: Item): Promise<string | null> => {
     if (!item.local) return null;
-    const local = await inspectLocal(item.local, item.record);
+    const local = await inspectLocal(this.app.vault, item.local, item.record);
     return local.hash;
   };
 
@@ -594,14 +618,71 @@ export class SyncEngine {
   };
 }
 
-async function inspectLocal(file: TFile | undefined, record: FileRecord | undefined): Promise<LocalView> {
+function vaultLocalFromFile(file: TFile): VaultLocal {
+  return { path: file.path, mtime: file.stat.mtime, size: file.stat.size, file };
+}
+
+async function listSnippetFiles(vault: Vault, configDir: string): Promise<VaultLocal[]> {
+  const files: VaultLocal[] = [];
+  await walkSnippetFolder(vault, snippetFolder(configDir), files);
+  return files;
+}
+
+async function walkSnippetFolder(vault: Vault, folder: string, files: VaultLocal[]): Promise<void> {
+  let listed: { files: string[]; folders: string[] };
+  try {
+    if (!(await vault.adapter.exists(folder))) return;
+    listed = await vault.adapter.list(folder);
+  } catch {
+    return;
+  }
+  for (const child of listed.folders) {
+    const name = child.split("/").pop() ?? "";
+    if (!name || name.startsWith(".")) continue;
+    await walkSnippetFolder(vault, child, files);
+  }
+  for (const path of listed.files) {
+    const name = path.split("/").pop() ?? "";
+    if (!name || name.startsWith(".")) continue;
+    const stat = await vault.adapter.stat(path);
+    if (!stat || stat.type === "folder") continue;
+    files.push({ path, mtime: stat.mtime ?? 0, size: stat.size ?? 0 });
+  }
+}
+
+async function readLocalBytes(vault: Vault, local: VaultLocal): Promise<ArrayBuffer> {
+  if (local.file) return vault.readBinary(local.file);
+  return vault.adapter.readBinary(local.path);
+}
+
+async function readPathBytes(vault: Vault, path: string): Promise<ArrayBuffer | null> {
+  const normalized = normalizePath(path);
+  const file = vault.getAbstractFileByPath(normalized);
+  if (file instanceof TFile) return vault.readBinary(file);
+  return readAdapterIfPresent(vault, normalized);
+}
+
+async function readAdapterIfPresent(vault: Vault, path: string): Promise<ArrayBuffer | null> {
+  if (!(await vault.adapter.exists(path))) return null;
+  const stat = await vault.adapter.stat(path);
+  if (!stat || stat.type === "folder") return null;
+  return vault.adapter.readBinary(path);
+}
+
+async function inspectLocal(vault: Vault, file: VaultLocal | undefined, record: FileRecord | undefined): Promise<LocalView> {
   if (!file) return { presence: "absent", hash: "", mtime: 0, size: 0 };
-  const mtime = file.stat.mtime;
-  const size = file.stat.size;
+  let mtime = file.file?.stat.mtime ?? file.mtime;
+  let size = file.file?.stat.size ?? file.size;
+  if (!file.file) {
+    const stat = await vault.adapter.stat(file.path);
+    if (!stat || stat.type === "folder") return { presence: "absent", hash: "", mtime: 0, size: 0 };
+    mtime = stat.mtime;
+    size = stat.size;
+  }
   if (record && record.mtime !== 0 && record.mtime === mtime && record.size === size) {
     return { presence: "unchanged", hash: record.hash, mtime, size };
   }
-  const bytes = await file.vault.readBinary(file);
+  const bytes = await readLocalBytes(vault, file);
   const hash = await sha256Hex(bytes);
   if (!record) return { presence: "untracked", hash, bytes, mtime, size };
   if (hash === record.hash) {
@@ -612,14 +693,24 @@ async function inspectLocal(file: TFile | undefined, record: FileRecord | undefi
   return { presence: "changed", hash, bytes, mtime, size };
 }
 
-function stableMtime(app: App, path: string, mtime: number, size: number): number {
-  const after = app.vault.getAbstractFileByPath(normalizePath(path));
+async function stableMtime(app: App, path: string, mtime: number, size: number): Promise<number> {
+  const normalized = normalizePath(path);
+  const after = app.vault.getAbstractFileByPath(normalized);
   if (after instanceof TFile && after.stat.mtime === mtime && after.stat.size === size) return mtime;
+  if (isSnippetPath(normalized, app.vault.configDir) || isSnippetPath(normalized)) {
+    const stat = await app.vault.adapter.stat(normalized);
+    if (stat && stat.mtime === mtime && stat.size === size) return mtime;
+  }
   return 0;
 }
 
 async function writeLocal(vault: Vault, path: string, bytes: ArrayBuffer): Promise<void> {
   const normalized = normalizePath(path);
+  if (isSnippetPath(normalized, vault.configDir) || isSnippetPath(normalized)) {
+    await ensureAdapterFolder(vault, normalized);
+    await vault.adapter.writeBinary(normalized, bytes);
+    return;
+  }
   const existing = vault.getAbstractFileByPath(normalized);
   if (existing instanceof TFile) {
     await vault.modifyBinary(existing, bytes);
@@ -628,6 +719,18 @@ async function writeLocal(vault: Vault, path: string, bytes: ArrayBuffer): Promi
   if (existing) throw new Error(`${normalized} is not a file.`);
   await ensureFolder(vault, normalized);
   await vault.createBinary(normalized, bytes);
+}
+
+async function ensureAdapterFolder(vault: Vault, filePath: string): Promise<void> {
+  const slash = filePath.lastIndexOf("/");
+  if (slash <= 0) return;
+  const parts = filePath.slice(0, slash).split("/");
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (await vault.adapter.exists(current)) continue;
+    await vault.adapter.mkdir(current);
+  }
 }
 
 async function ensureFolder(vault: Vault, filePath: string): Promise<void> {
@@ -669,6 +772,14 @@ type Outcome =
   | { type: "merge"; overlap: boolean; path: string; bytes: ArrayBuffer }
   | { type: "rename"; fromPath: string; fromKey: string; record: FileRecord }
   | { type: "conflict"; kind: ConflictKind; localHash: string | null; remoteRev: string | null };
+
+async function trashLocalFile(app: App, local: VaultLocal): Promise<void> {
+  if (local.file) {
+    await trashVaultFile(app, local.file);
+    return;
+  }
+  if (await app.vault.adapter.exists(local.path)) await app.vault.adapter.remove(local.path);
+}
 
 async function trashVaultFile(app: App, file: TFile): Promise<void> {
   const manager = app.fileManager as { trashFile?: (target: TFile) => Promise<void> };
