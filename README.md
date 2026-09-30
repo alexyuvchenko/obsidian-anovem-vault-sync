@@ -16,9 +16,10 @@ To install into a vault that does not have the plugin yet:
 ./scripts/install-release.sh "/path/to/vault"
 ```
 
-`manifest.json` is the plugin version. `package.json` and `versions.json` must carry the same number. Change it in all three with:
+`manifest.json` is the plugin version. `package.json` and `versions.json` must carry the same number. Use Node.js 22 or newer. On this Mac the default `node` may be nvm's old x86 binary; that fails with `bad CPU type in executable`. Switch first, then bump the version:
 
 ```bash
+nvm use 22
 node scripts/version.mjs 0.2.0
 ```
 
@@ -94,9 +95,10 @@ Run it from the archive ribbon icon, the command **Backup vault**, or the button
 ## Build
 
 ```bash
+nvm use 22
 npm install
 npm test
 ./scripts/build.sh
 ```
 
-`./scripts/build.sh` runs `npm run build` and writes `main.js`. Node.js 22 or newer is required.
+`./scripts/build.sh` runs `npm run build` and writes `main.js`. Node.js 22 or newer is required. `nvm use 22` selects the arm64 install; leave nvm on v10 and `node` will not run on Apple Silicon.
